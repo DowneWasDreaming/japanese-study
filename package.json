@@ -1,0 +1,34 @@
+{
+  "name": "komorebi-japanese-study",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "dev": "tsx server/index.ts",
+    "init": "tsx scripts/init.ts",
+    "build": "tsc --noEmit && vite build",
+    "start": "tsx server/index.ts --production",
+    "test": "tsx --test tests/*.test.ts",
+    "check": "tsc --noEmit",
+    "audit:files": "tsx scripts/audit-files.ts"
+  },
+  "dependencies": {
+    "express": "5.1.0",
+    "jose": "6.1.0",
+    "lucide-react": "0.468.0",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.3",
+    "@types/node": "24.3.1",
+    "@types/react": "19.1.13",
+    "@types/react-dom": "19.1.9",
+    "@vitejs/plugin-react": "5.0.3",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2",
+    "vite": "7.1.7"
+  }
+}
