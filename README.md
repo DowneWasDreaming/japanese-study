@@ -2,6 +2,8 @@
 
 中文界面的本地个人学习网站：React + TypeScript + Express + Node.js 内置 SQLite。学习数据保存在本机；AI 通过官方 **Sign in with ChatGPT / ChatGPT plan usage** 授权调用 OpenAI。没有 API Key 配置或备用计费路径。
 
+公开源码仓库：[DowneWasDreaming/japanese-study](https://github.com/DowneWasDreaming/japanese-study)。仓库保存源代码、测试与运行说明；个人学习数据和登录凭据在各自电脑上保存。
+
 ## 日常使用：双击启动
 
 **当前 Windows 电脑已经安装依赖并完成构建，直接在资源管理器中使用即可，不需要打开终端。**
@@ -148,16 +150,21 @@ SQL 迁移在 `migrations/`。后续升级应新增递增版本的迁移，不�
 
 GitHub 只保存源代码、锁文件、迁移、原创种子内容和文档。`.gitignore` 排除数据库/WAL/SHM、学习文件、认证、环境文件、日志、缓存、导出、备份、依赖及构建产物。推送前运行 `pnpm audit:files` 检查已跟踪路径、工作目录、暂存区与可达提交历史中的疑似令牌。如果历史中发现凭据，停止推送并先处理历史和撤销凭据。
 
-没有提供 GitHub 仓库地址时，仅完成本地项目与本地 Git 保存。连接用户指定的空仓库后：
+当前项目的 `origin` 指向上述个人公开仓库。后续更新在本地保存代码后，先检查待发布内容再推送：
 
 ```powershell
-git remote add origin https://github.com/你的用户名/你的仓库.git
-git branch -M main
 pnpm audit:files
-git push -u origin main
+git push origin main
 ```
 
-需要自己的 GitHub 认证。如果远端已有提交，先 fetch 并整合历史，不能强制推送覆盖。不要把本机 `.local` 或导出文件加入提交。
+另一台电脑可通过 Git 下载源码，再按前面的安装说明安装依赖并启动：
+
+```powershell
+git clone https://github.com/DowneWasDreaming/japanese-study.git
+cd japanese-study
+```
+
+只下载和运行公开源码无需 GitHub 写入权限，向仓库推送修改则需要相应账号认证。如果远端已有新提交，先 fetch 并整合历史，不能强制推送覆盖。不要把本机 `.local` 或导出文件加入提交。源码仓库不包含当前电脑的学习数据；换电脑时，可用网站的学习备份导出及恢复功能转移个人记录，并在新电脑重新连接 ChatGPT。
 
 ## 官方接入资料
 

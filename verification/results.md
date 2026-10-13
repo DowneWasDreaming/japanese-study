@@ -117,4 +117,6 @@
 
 学习数据位于 `.local/data/study.sqlite`，凭据目录为 `.local/credentials/`；二者分开。版本化学习备份不包含认证凭据，恢复前自动快照位于 `.local/data/backups/`。没有未交卷考试时可导出完整学习备份。
 
-源代码、依赖锁文件、迁移、原创种子和文档以本地 `main` 分支保存。当前没有提供 GitHub 仓库地址，也未配置 `origin`，所以**尚未上传 GitHub**。上传步骤见 README；用户提供指定仓库并具备 GitHub 认证后可推送，不强制覆盖远端历史。具体本地提交可用 `git log -1 --oneline` 查看。
+2026-10-13 用户明确授权在个人账号下创建公开仓库并上传当前项目。GitHub 个人公开仓库为 [DowneWasDreaming/japanese-study](https://github.com/DowneWasDreaming/japanese-study)，本地 `origin` 指向该仓库；源代码、依赖锁文件、迁移、原创种子、测试和文档以 `main` 分支发布。初始仓库为空，上传使用正常推送，未覆盖已有远端内容。
+
+发布前检查 44 个跟踪文件、暂存区及全部可达 Git 历史，未发现学习数据库、认证文件、备份、日志或疑似真实令牌。本机 Git 认证由用户通过 GitHub 官方设备码页面完成；发布辅助只在进程内存中使用凭据，不输出或保存令牌。GitHub 登录凭据不属于网站的 ChatGPT 凭据或学习备份。源码上传后网站仍按本文的本机地址运行；本地学习数据没有上传。具体提交可在仓库中查看，或使用 `git log -1 --oneline` 读取。
