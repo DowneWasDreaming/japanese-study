@@ -1,4 +1,5 @@
 import express from 'express';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
@@ -10,8 +11,11 @@ import { LimitedGenerator } from './quota.js';
 import { localBoundary, errorHandler } from './security.js';
 import type { getConfig } from './config.js';
 
-export function createApplication(config: ReturnType<typeof getConfig>, db: DatabaseSync, auth: AuthManager, model: ModelService) {
+export function createApplication(config: ReturnType<typeof getConfig>, db: DatabaseSync, auth: AuthManager, model: ModelService,
+  desktop?: { instance: string; token: string; stop: () => Promise<void> }) {
   const app = express();
+  const projectPath = process.platform === 'win32' ? resolve('.').toLowerCase() : resolve('.');
+  const project = createHash('sha256').update(projectPath).digest('hex');
   app.disable('x-powered-by');
   app.use(localBoundary(config.origin));
   app.use(express.json({ limit: '15mb' }));
@@ -21,7 +25,16 @@ export function createApplication(config: ReturnType<typeof getConfig>, db: Data
     return limiter.generate(messages, selected);
   } };
   const learning = new LearningService(db, provider, { backupDir: resolve(config.dataDir, 'backups') });
-  app.get('/api/health', (_req, res) => res.json({ ok: true, storage: 'SQLite', version: '1.0.0' }));
+  app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'komorebi-japanese-study', project, storage: 'SQLite', version: '1.0.0', pid: process.pid, desktopInstance: desktop?.instance ?? null }));
+  if (desktop) app.post('/api/desktop/stop', (req, res) => {
+    const supplied = Buffer.from(String(req.headers['x-study-control'] || ''));
+    const expected = Buffer.from(desktop.token);
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+      res.status(403).json({ error: { code: 'INVALID_CONTROL', message: '只能通过本机停止入口关闭服务。' } }); return;
+    }
+    res.json({ ok: true });
+    setImmediate(() => void desktop.stop());
+  });
   app.use('/api/auth', createAuthRouter(auth));
   app.get('/auth/callback', async (req, res) => {
     try {
