@@ -65,7 +65,7 @@ export function createApplication(config: ReturnType<typeof getConfig>, db: Data
     try { const result = await connectionTask; res.json({ ...result, verified: true, message: '已获取可用模型、完成真实流式调用，并将校验通过的一道题保存在 SQLite。' }); }
     finally { connectionTask = null; }
   });
-  app.use('/api', createLearningRouter(learning));
+  app.use('/api', createLearningRouter(learning, db, ()=>connectionTask!==null));
   app.use('/api', (_req, res) => res.status(404).json({ error: { code: 'NOT_FOUND', message: '接口不存在。' } }));
   app.use(errorHandler);
   return { app, learning, limiter };

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDatabase } from '../server/db.js';
@@ -9,8 +9,9 @@ import { seedDatabase } from '../server/seed.js';
 import { AuthManager } from '../server/auth.js';
 import { ModelService } from '../server/model.js';
 import { createApplication } from '../server/app.js';
+import { validateBackup } from '../server/learning.js';
 
-test('HTTP study flow persists drafts, conceals answers, grades once and supports backups', async () => {
+test('HTTP study flow persists drafts, grades once, records knowledge and confirms recoverable deletion', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'japanese-http-'));
   const dbPath = join(directory, 'data', 'study.sqlite');
   let db = openDatabase(dbPath); seedDatabase(db);
@@ -54,6 +55,54 @@ test('HTTP study flow persists drafts, conceals answers, grades once and support
     const backup = (await call('/api/backup')).json; assert.ok(backup.version); assert.ok(!JSON.stringify(backup).includes('access_token'));
     const restored = await call('/api/restore', backup); assert.equal(restored.status, 200, JSON.stringify(restored.json));
     assert.ok((await call('/api/exams')).json.items.some((item: any) => item.id === id));
+    const knowledge = (await call('/api/knowledge?level=N5')).json.items;
+    assert.ok(knowledge.length > 0);
+    assert.ok(knowledge.every((point: any) => point.level === 'N5' && point.questionCount > 0 && point.attempts > 0));
+    assert.ok(knowledge.every((point: any) => point.accuracy >= 0 && point.accuracy <= 1));
+    const summary = (await call('/api/data/summary')).json;
+    assert.equal(summary.counts.exams, 2); assert.equal(summary.busy, false);
+    const forbidden = await fetch(origin + '/api/data', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: 'invented', confirmation: '删除' }) });
+    assert.equal(forbidden.status, 403, '删除接口同样要求本机页面 Origin 与客户端标记');
+    db.prepare('INSERT INTO local_ai_requests(created_at) VALUES(?)').run(Date.now());
+    const preview = await call('/api/data/delete-preview', { scope: 'exam', id: repeat.json.id });
+    assert.equal(preview.status, 200, JSON.stringify(preview.json));
+    assert.equal(preview.json.counts.exams, 1);
+    assert.ok(db.prepare('SELECT id FROM exams WHERE id=?').get(repeat.json.id), '预览不得删除数据');
+    const unconfirmed = await call('/api/data', { token: preview.json.token }, 'DELETE');
+    assert.equal(unconfirmed.status, 400);
+    assert.ok(db.prepare('SELECT id FROM exams WHERE id=?').get(repeat.json.id));
+    const deleted = await call('/api/data', { token: preview.json.token, confirmation: '删除' }, 'DELETE');
+    assert.equal(deleted.status, 200, JSON.stringify(deleted.json));
+    assert.equal(deleted.json.deleted, true);
+    assert.equal((await call('/api/exams/' + repeat.json.id)).status, 404);
+    assert.equal((await call('/api/exams/' + id)).status, 200);
+    assert.equal((db.prepare('SELECT count(*) AS n FROM mistakes WHERE exam_id=?').get(repeat.json.id) as { n: number }).n, 0);
+    const beforeDelete = validateBackup(JSON.parse(readFileSync(deleted.json.beforeDeleteBackup, 'utf8')));
+    assert.ok(beforeDelete.tables.exams.some(item => item.id === repeat.json.id));
+    const recovered = await call('/api/restore', beforeDelete);
+    assert.equal(recovered.status, 200, JSON.stringify(recovered.json));
+    assert.equal((await call('/api/exams/' + repeat.json.id)).status, 200);
+    assert.equal((db.prepare('SELECT count(*) AS n FROM local_ai_requests').get() as { n: number }).n, 1, '删除及恢复保留本地请求计数');
+    // Connection verification waits for the model catalog before createExam is
+    // called. It must still protect deletion/restoration during that first wait.
+    const originalStatus = auth.status.bind(auth);
+    const originalCatalog = model.listModels.bind(model);
+    let catalogStarted!: () => void; let releaseCatalog!: () => void;
+    const started = new Promise<void>(resolve => { catalogStarted = resolve; });
+    const held = new Promise<void>(resolve => { releaseCatalog = resolve; });
+    auth.status = () => ({ ...originalStatus(), planAuthorized: true });
+    model.listModels = async () => { catalogStarted(); await held; throw new Error('模拟模型目录失败'); };
+    const pendingConnection = call('/api/connection-test', {});
+    try {
+      await started;
+      assert.equal((await call('/api/data/summary')).json.busy, true);
+      assert.equal((await call('/api/data/delete-preview', { scope: 'all' })).status, 409);
+      assert.equal((await call('/api/restore', beforeDelete)).status, 409);
+    } finally {
+      releaseCatalog(); await pendingConnection;
+      auth.status = originalStatus; model.listModels = originalCatalog;
+    }
+    assert.equal((await call('/api/data/summary')).json.busy, false);
     server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
     db.close(); db = openDatabase(dbPath); seedDatabase(db);
     assert.ok(db.prepare('SELECT id FROM exams WHERE id=?').get(id));
