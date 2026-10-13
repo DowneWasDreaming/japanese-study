@@ -37,6 +37,11 @@ test('HTTP study flow persists drafts, grades once, records knowledge and confir
     assert.equal(created.status, 200, JSON.stringify(created.json)); const id = created.json.id;
     const exam = (await call('/api/exams/' + id)).json;
     assert.equal(exam.questions.length, 2);
+    assert.equal(exam.gradingMode, 'mixed'); assert.equal(exam.gradingModeLocked, false);
+    const aiMode = await call('/api/exams/' + id + '/grading-mode', { gradingMode: 'ai' }, 'PUT');
+    assert.equal(aiMode.status, 200, JSON.stringify(aiMode.json)); assert.equal(aiMode.json.gradingMode, 'ai');
+    assert.equal((await call('/api/exams/' + id + '/grading-mode', { gradingMode: 'unknown' }, 'PUT')).status, 400);
+    assert.equal((await call('/api/exams/' + id + '/grading-mode', { gradingMode: 'mixed' }, 'PUT')).status, 200);
     for (const question of exam.questions) {
       assert.ok(!Object.hasOwn(question, 'answer')); assert.ok(!Object.hasOwn(question, 'acceptedAnswers'));
       assert.ok(!Object.hasOwn(question, 'explanation')); assert.ok(!Object.hasOwn(question, 'rubric'));
@@ -46,6 +51,8 @@ test('HTTP study flow persists drafts, grades once, records knowledge and confir
     assert.deepEqual((await call('/api/exams/' + id)).json.answers, draft);
     const feedback = await call('/api/exams/' + id + '/feedback', { questionId: exam.questions[0].id }); assert.equal(feedback.status, 403);
     const first = await call('/api/exams/' + id + '/submit', {}); assert.equal(first.status, 200, JSON.stringify(first.json));
+    assert.equal(first.json.gradingModeLocked, true);
+    assert.equal((await call('/api/exams/' + id + '/grading-mode', { gradingMode: 'ai' }, 'PUT')).status, 409);
     await call('/api/exams/' + id + '/submit', {});
     const grades = db.prepare('SELECT count(*) AS n FROM grades WHERE exam_id=?').get(id) as { n: number }; assert.equal(grades.n, 2);
     assert.ok((await call('/api/mistakes')).json.items.length > 0);
@@ -83,6 +90,18 @@ test('HTTP study flow persists drafts, grades once, records knowledge and confir
     assert.equal(recovered.status, 200, JSON.stringify(recovered.json));
     assert.equal((await call('/api/exams/' + repeat.json.id)).status, 200);
     assert.equal((db.prepare('SELECT count(*) AS n FROM local_ai_requests').get() as { n: number }).n, 1, '删除及恢复保留本地请求计数');
+    const aiPaper = await call('/api/exams', { level: 'N5', count: 1, types: ['single'], source: 'builtin', mode: 'practice', gradingMode: 'ai' });
+    assert.equal(aiPaper.status, 200, JSON.stringify(aiPaper.json));
+    const aiExam = (await call('/api/exams/' + aiPaper.json.id)).json;
+    assert.equal(aiExam.gradingMode, 'ai');
+    await call('/api/exams/' + aiExam.id + '/answers', { answers: { [aiExam.questions[0].id]: aiExam.questions[0].options[0].id } }, 'PUT');
+    const failedAI = await call('/api/exams/' + aiExam.id + '/submit', {});
+    assert.equal(failedAI.json.status, 'partial', '未授权的 AI 判卷不能悄悄改回本机评分');
+    const failedGrade = failedAI.json.grades[aiExam.questions[0].id];
+    assert.equal(failedGrade.status, 'failed'); assert.equal(failedGrade.score, null);
+    assert.equal((await call('/api/exams/' + aiExam.id + '/grading-mode', { gradingMode: 'mixed' }, 'PUT')).status, 409);
+    validateBackup((await call('/api/backup')).json);
+    assert.equal((await call('/api/restore', beforeDelete)).status, 200);
     // Connection verification waits for the model catalog before createExam is
     // called. It must still protect deletion/restoration during that first wait.
     const originalStatus = auth.status.bind(auth);

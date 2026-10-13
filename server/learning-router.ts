@@ -23,6 +23,10 @@ export function createLearningRouter(service:LearningService, db:DatabaseSync, a
   router.get('/exams',(_req,res)=>res.json(service.listExams()));
   router.post('/exams',async(req,res)=>res.json(await service.createExam(req.body)));
   router.get('/exams/:id',(req,res)=>res.json(service.getExam(routeId(req))));
+  router.put('/exams/:id/grading-mode',(req,res)=>{
+    if(busy())throw new LearningError('有出题、学习或评分请求正在进行，请完成后再修改判卷方式。','GRADING_MODE_BUSY',409);
+    res.json(service.setGradingMode(routeId(req),req.body));
+  });
   router.put('/exams/:id/answers',(req,res)=>{const body=z.object({answers:z.record(z.string().max(20_000)).refine(v=>Object.keys(v).length<=50)}).strict().parse(req.body);res.json(service.saveAnswers(routeId(req),body.answers));});
   router.post('/exams/:id/feedback',async(req,res)=>{const body=z.object({questionId:id}).strict().parse(req.body);res.json(await service.feedback(routeId(req),body.questionId));});
   router.post('/exams/:id/submit',async(req,res)=>res.json(await service.submit(routeId(req))));

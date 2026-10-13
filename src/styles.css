@@ -276,6 +276,21 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--green); }
 .mode-card > strong { display: block; font-size: 12px; font-weight: 500; margin: 12px 0 7px; }
 .mode-card > span { display: block; font-size: 10px; color: var(--muted); line-height: 1.9; }
 .mode-check { position: absolute; right: 13px; top: 14px; }
+.grading-field-label { margin-top: 25px; }
+.grading-mode-cards { margin-bottom: 14px; }
+.grading-mode-cards .mode-card:disabled { cursor: wait; opacity: .7; }
+.exam-grading-panel { margin-bottom: 24px; }
+.exam-grading-panel .section-heading { margin-bottom: 17px; }
+.exam-grading-panel .grading-mode-cards { max-width: 660px; }
+.exam-grading-panel > .notice-box { margin-top: 15px; }
+.grading-saving { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+.grading-locked { margin-top: 10px; }
+@media (max-width: 430px) {
+  .grading-mode-cards { grid-template-columns: 1fr; }
+  .grading-mode-cards .mode-card { padding: 15px 17px; }
+  .grading-mode-cards .mode-card > strong { margin-top: 8px; }
+  .exam-grading-panel .section-heading { flex-wrap: wrap; gap: 10px; }
+}
 .setup-summary { align-self: start; position: sticky; top: 25px; }
 .setup-summary .panel { text-align: center; padding: 27px 22px 20px; }
 .summary-icon { height: 50px; width: 50px; display: flex; align-items: center; justify-content: center; margin: 0 auto 17px; border-radius: 50%; color: #92a179; background: var(--soft); }
