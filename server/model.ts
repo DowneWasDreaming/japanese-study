@@ -79,11 +79,27 @@ export class ModelService {
     const response = await this.request('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json',Accept:'text/event-stream'},
       body:JSON.stringify({model:selected,input,store:false,stream:true})},180000);
     if (!response.ok) throw await this.responseError(response);
-    if (!response.headers.get('content-type')?.toLowerCase().includes('text/event-stream') || !response.body) {
+    const mediaType = response.headers.get('content-type')?.split(';',1)[0].trim().toLowerCase();
+    // The plan route can return valid SSE with no Content-Type header. Verify
+    // that body's event framing instead of rejecting it before reading. A
+    // declared JSON/HTML type still fails; no JSON fallback or extra request.
+    if ((mediaType && mediaType !== 'text/event-stream') || !response.body) {
+      await response.body?.cancel().catch(() => {});
       throw new IntegrationError(502,'MODEL_STREAM_INVALID','OpenAI 未返回预期的事件流，结果未保存为完成。');
     }
     const reader = response.body.getReader(); const decoder = new TextDecoder();
     let buffer = ''; let accumulated = ''; let totalBytes = 0; let result:string|null = null;
+    const completedItems = new Map<number,{id:string;text:string}>();
+    let completedTextLength = 0;
+    let framingVerified = mediaType === 'text/event-stream';
+    const verifyFraming = () => {
+      if (framingVerified) return;
+      const beginning = buffer.trimStart();
+      const prefixes = ['data:','event:',':','id:','retry:'];
+      if (prefixes.some(prefix => beginning.startsWith(prefix))) {framingVerified=true;return;}
+      if (buffer.length <= 1024 && prefixes.some(prefix => prefix.startsWith(beginning))) return;
+      throw new IntegrationError(502,'MODEL_STREAM_INVALID','OpenAI 未返回可识别的事件流，结果未保存为完成。');
+    };
     const processEvent = (block:string) => {
       const data = block.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
       if (!data || data === '[DONE]') return;
@@ -94,6 +110,29 @@ export class ModelService {
         if (typeof event.delta !== 'string') throw new IntegrationError(502,'MODEL_STREAM_INVALID','模型文本片段格式无效。');
         accumulated += event.delta;
         if (accumulated.length > 500000) throw new IntegrationError(502,'MODEL_OUTPUT_TOO_LARGE','模型输出超过本地允许长度，结果未保存。');
+      } else if (eventType === 'response.output_item.done') {
+        const item = event.item as {id?:unknown;type?:unknown;status?:unknown;role?:unknown;content?:unknown} | undefined;
+        if (!item || item.type !== 'message') return;
+        const index = event.output_index;
+        if (typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index > 1000 ||
+          typeof item.id !== 'string' || !item.id || item.id.length > 200 || item.status !== 'completed' || item.role !== 'assistant' || !Array.isArray(item.content)) {
+          throw new IntegrationError(502,'MODEL_STREAM_INVALID','模型最终消息格式无效，结果未保存为完成。');
+        }
+        const parts:string[] = [];
+        for (const part of item.content) {
+          if (part && typeof part === 'object' && part.type === 'output_text') {
+            if (typeof part.text !== 'string') throw new IntegrationError(502,'MODEL_STREAM_INVALID','模型最终文本格式无效。');
+            parts.push(part.text);
+          }
+        }
+        const text = parts.join(''); const previous = completedItems.get(index);
+        if (previous) {
+          if (previous.id !== item.id || previous.text !== text) throw new IntegrationError(502,'MODEL_STREAM_INVALID','模型最终消息发生冲突，结果未保存为完成。');
+        } else {
+          completedTextLength += text.length;
+          if (completedTextLength > 500000) throw new IntegrationError(502,'MODEL_OUTPUT_TOO_LARGE','模型输出超过本地允许长度，结果未保存。');
+          completedItems.set(index,{id:item.id,text});
+        }
       } else if (eventType === 'response.failed' || eventType === 'error') {
         const responseBody = event.response && typeof event.response === 'object' ? event.response as Record<string,unknown> : event;
         const errBody = responseBody.error || event.error || {code:event.code,message:event.message};
@@ -114,7 +153,12 @@ export class ModelService {
           if (item.type !== 'message' || !Array.isArray(item.content)) continue;
           for (const part of item.content) if (part && typeof part === 'object' && part.type === 'output_text' && typeof part.text === 'string') texts.push(part.text);
         }
-        result = texts.join('');
+        // Some plan streams omit repeated items from the terminal response.
+        // Use only completed output_item.done messages, never partial deltas,
+        // and still require the successful response.completed event above.
+        result = completed.output.length === 0
+          ? [...completedItems].sort(([a],[b]) => a-b).map(([,item]) => item.text).join('')
+          : texts.join('');
         if (!result.trim() || result.length > 500000) throw new IntegrationError(502,'MODEL_OUTPUT_INVALID','模型没有返回有效的完整文本。');
       }
     };
@@ -123,6 +167,7 @@ export class ModelService {
         const chunk = await reader.read();
         if (chunk.done) {
           buffer += decoder.decode();
+          verifyFraming();
           if (buffer.trim()) processEvent(buffer.replace(/\r\n/g,'\n'));
           if (result === null) throw new IntegrationError(502,'MODEL_STREAM_INTERRUPTED','模型事件流已中断，未收到 response.completed；部分文本不会作为成功结果保存。');
           break;
@@ -130,6 +175,7 @@ export class ModelService {
         totalBytes += chunk.value.byteLength;
         if (totalBytes > 8*1024*1024) throw new IntegrationError(502,'MODEL_OUTPUT_TOO_LARGE','模型事件流超过本地允许大小。');
         buffer += decoder.decode(chunk.value,{stream:true}); buffer = buffer.replace(/\r\n/g,'\n');
+        verifyFraming();
         let boundary:number;
         while (result === null && (boundary=buffer.indexOf('\n\n')) >= 0) {
           const event = buffer.slice(0,boundary); buffer = buffer.slice(boundary+2); processEvent(event);

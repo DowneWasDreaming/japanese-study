@@ -25,6 +25,9 @@ const completed = (text = '私は学生です。表示“我是学生”。') =>
     { type: 'message', content: [{ type: 'output_text', text }] },
   ] },
 });
+const itemDone = (index = 0, text = '完成文本') => ({ type: 'response.output_item.done', output_index: index,
+  item: { id: 'fake-message-' + index, type: 'message', role: 'assistant', status: 'completed', content: [{type:'output_text',text}] } });
+const terminalWithoutItems = () => ({type:'response.completed',response:{status:'completed',output:[]}});
 function sse(events: unknown[], chunkSize = 19): Response {
   const bytes = new TextEncoder().encode(events.map(event).join(''));
   let offset = 0;
@@ -111,6 +114,70 @@ test('Responses request uses explicit history and documented plan fields; comple
   assert.equal(headers.get('Accept'), 'text/event-stream');
   assert.deepEqual(JSON.parse(String(request.init.body)), {
     model: 'alternate-model', input: messages, store: false, stream: true,
+  });
+});
+
+test('a missing Content-Type accepts verified SSE framing through completed, even in one-byte chunks', async t => {
+  const text = '日本語の練習を続けます。';
+  const encoded = new TextEncoder().encode(': keepalive\r\n\r\n' + event(delta('部分内容')) + event(completed(text)));
+  let offset = 0;
+  const f = fixture(t, () => new Response(new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset === encoded.length) {controller.close();return;}
+      controller.enqueue(encoded.slice(offset, ++offset));
+    },
+  })));
+  assert.equal(await f.service.generate(messages), text);
+  assert.equal(f.inferenceRequests().length, 1);
+});
+
+test('missing Content-Type does not turn JSON, HTML, failed or interrupted output into success', async t => {
+  const cases = [
+    {name:'JSON',body:JSON.stringify(completed().response),code:'MODEL_STREAM_INVALID'},
+    {name:'HTML',body:'<html>temporary gateway page</html>',code:'MODEL_STREAM_INVALID'},
+    {name:'failed SSE',body:event(delta()) + event({type:'response.failed',response:{error:{code:'server_error'}}}),code:'server_error'},
+    {name:'incomplete SSE',body:event(delta()) + event({type:'response.incomplete',response:{status:'incomplete'}}),code:'MODEL_RESPONSE_INCOMPLETE'},
+    {name:'interrupted SSE',body:event(delta()),code:'MODEL_STREAM_INTERRUPTED'},
+  ];
+  for (const example of cases) await t.test(example.name, async sub => {
+    const f = fixture(sub, () => new Response(new TextEncoder().encode(example.body)));
+    await assert.rejects(f.service.generate(messages), {code:example.code});
+    assert.equal(f.inferenceRequests().length, 1);
+  });
+});
+
+test('empty terminal output uses completed message items in order, after overall completion only', async t => {
+  for (const missingMime of [false,true]) await t.test(missingMime ? 'missing MIME' : 'SSE MIME', async sub => {
+    const events = [delta('不使用这个部分文本'),itemDone(1,'後半。'),itemDone(0,'前半。'),itemDone(0,'前半。'),terminalWithoutItems()];
+    const f = fixture(sub, () => missingMime ? new Response(new TextEncoder().encode(events.map(event).join(''))) : sse(events,3));
+    assert.equal(await f.service.generate(messages), '前半。後半。');
+    assert.equal(f.inferenceRequests().length, 1);
+  });
+});
+
+test('completed item fallback refuses unfinished, conflicting, revoked or terminal-failed streams', async t => {
+  const cases = [
+    {name:'done item without terminal completion',events:[itemDone()],code:'MODEL_STREAM_INTERRUPTED'},
+    {name:'text done alone',events:[{type:'response.output_text.done',text:'不接受单独文本结束'},terminalWithoutItems()],code:'MODEL_OUTPUT_INVALID'},
+    {name:'unfinished item',events:[{...itemDone(),item:{...itemDone().item,status:'in_progress'}},terminalWithoutItems()],code:'MODEL_STREAM_INVALID'},
+    {name:'non-assistant item',events:[{...itemDone(),item:{...itemDone().item,role:'user'}},terminalWithoutItems()],code:'MODEL_STREAM_INVALID'},
+    {name:'conflicting item',events:[itemDone(),itemDone(0,'冲突文本'),terminalWithoutItems()],code:'MODEL_STREAM_INVALID'},
+    {name:'failed terminal',events:[itemDone(),{type:'response.failed',response:{error:{code:'server_error'}}}],code:'server_error'},
+    {name:'incomplete terminal',events:[itemDone(),{type:'response.incomplete',response:{status:'incomplete'}}],code:'MODEL_RESPONSE_INCOMPLETE'},
+  ];
+  for (const example of cases) await t.test(example.name, async sub => {
+    const f = fixture(sub, () => sse(example.events));
+    await assert.rejects(f.service.generate(messages), {code:example.code});
+    assert.equal(f.inferenceRequests().length, 1);
+  });
+  await t.test('authorization changed after item done', async sub => {
+    let revoke = () => {};
+    const f = fixture(sub, () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {controller.enqueue(new TextEncoder().encode(event(itemDone())));},
+      pull(controller) {revoke();controller.enqueue(new TextEncoder().encode(event(terminalWithoutItems())));controller.close();},
+    })));
+    revoke = () => {f.state.planAuthorized=false;};
+    await assert.rejects(f.service.generate(messages), {code:'AUTH_CHANGED'});
   });
 });
 
