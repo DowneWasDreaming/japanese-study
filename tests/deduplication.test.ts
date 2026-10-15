@@ -155,7 +155,7 @@ test('internal deletion backup is atomic and complete even for an unfinished exa
   assert.match(basename(file),/^before-delete-\d{4}-\d{2}-\d{2}T.*\.json$/);
   assert.deepEqual(readdirSync(join(directory,'backups')),[basename(file)]);
   assert.equal(snapshot.tables.exams[0].id,id);assert.equal(snapshot.tables.exams[0].status,'draft');
-  assert.equal(snapshot.tables.saved.length,1);assert.equal(snapshot.version,3);validateBackup(snapshot);
+  assert.equal(snapshot.tables.saved.length,1);assert.equal(snapshot.version,4);validateBackup(snapshot);
   assert.equal(Object.hasOwn(snapshot.tables,'local_ai_requests'),false);
   assert.equal(Object.hasOwn(snapshot.tables,'credentials'),false);assert.ok(!text.includes('private-test-marker'));
   assert.equal(service.getExam(id).status,'draft','creating a safety copy does not change data');

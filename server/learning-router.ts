@@ -24,6 +24,23 @@ export function createLearningRouter(service:LearningService, db:DatabaseSync, a
   router.get('/exams',(_req,res)=>res.json(service.listExams()));
   router.post('/exams',async(req,res)=>res.json(await service.createExam(req.body)));
   router.get('/exams/:id',(req,res)=>res.json(service.getExam(routeId(req))));
+  router.get('/exams/:id/discussion',(req,res)=>{
+    const query=z.object({questionId:id}).strict().parse(req.query);
+    res.json(service.discussions.list(routeId(req),query.questionId));
+  });
+  router.post('/exams/:id/discussion',async(req,res)=>{
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再提问。','EXAM_QA_BUSY',409);
+    res.json(await service.discussions.ask(routeId(req),req.body));
+  });
+  router.post('/exams/:id/discussion/:turnId/reply',async(req,res)=>{
+    z.object({}).strict().parse(req.body);
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再请求回答。','EXAM_QA_BUSY',409);
+    res.json(await service.discussions.reply(routeId(req),String(req.params.turnId)));
+  });
+  router.delete('/exams/:id/discussion/:turnId',(req,res)=>{
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再调整本题问答。','EXAM_QA_BUSY',409);
+    res.json(service.discussions.remove(routeId(req),String(req.params.turnId)));
+  });
   router.get('/exams/:id/annotations',(req,res)=>res.json(service.annotations.list(routeId(req))));
   router.post('/exams/:id/annotations',(req,res)=>{
     if(additionalBusy())throw new LearningError('正在验证连接，请完成后再保存标记。','ANNOTATIONS_BUSY',409);

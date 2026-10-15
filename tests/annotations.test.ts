@@ -202,10 +202,10 @@ test('migration 002 preserves version-1 data and restart converts pending marks 
   db.exec(readFileSync(new URL('../migrations/001.sql',import.meta.url),'utf8'));db.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(1,new Date().toISOString());
   const q=question();insertExam(db,'old-exam',[q]);db.prepare('INSERT INTO answers(exam_id,question_id,answer,updated_at) VALUES(?,?,?,?)').run('old-exam',q.id,q.answer,new Date().toISOString());db.close();
   db=openDatabase(path);let learning=new LearningService(db);let service=learning.annotations;
-  assert.equal(Number(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()!.n),3);assert.equal(db.prepare('SELECT answer FROM answers').get()!.answer,q.answer);
+  assert.equal(Number(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()!.n),4);assert.equal(db.prepare('SELECT answer FROM answers').get()!.answer,q.answer);
   const mark=service.add('old-exam',select(q,'prompt','日本語')).item;await learning.submit('old-exam');db.prepare("UPDATE exam_annotations SET status='pending' WHERE id=?").run(mark.id);db.close();
   db=openDatabase(path);learning=new LearningService(db,{async generate(messages){return output(request(messages));}});service=learning.annotations;
   assert.equal(service.list('old-exam').items[0].status,'failed');assert.equal(service.list('old-exam').items[0].explanation,null);assert.match(service.list('old-exam').items[0].error!,/退出中断/);
   await service.explain('old-exam',{retryFailedOnly:true});assert.equal(service.list('old-exam').items[0].status,'completed');
-  assert.equal(Number(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()!.n),3);
+  assert.equal(Number(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()!.n),4);
 });

@@ -107,11 +107,11 @@ test('a failed diagnostic insert cannot replace the original grading error or le
   assert.equal(Number(db.prepare('SELECT COUNT(*) AS n FROM grades WHERE status=\'pending\'').get()!.n),0);
 });
 
-test('v3 backups preserve diagnostics, v1/v2 restore safely, and invalid diagnostic references never mutate data',async t=>{
+test('v4 backups preserve diagnostics, v1/v2 restore safely, and invalid diagnostic references never mutate data',async t=>{
   const {service,diagnostics}=setup(t,{async generate(){throw upstreamError();}});const {id}=await paper(service);await service.submit(id);
-  const backup=service.backup();assert.equal(backup.version,3);assert.equal(validateBackup(backup).tables.ai_failures.length,1);
+  const backup=service.backup();assert.equal(backup.version,4);assert.equal(validateBackup(backup).tables.ai_failures.length,1);
   service.restore(backup);assert.equal(diagnostics.list({examId:id}).items[0].upstreamMessage,'Usage exhausted for this account.');
-  for(const version of [1,2]){const old=structuredClone(backup) as any;old.version=version;delete old.tables.ai_failures;if(version===1)delete old.tables.exam_annotations;assert.equal(validateBackup(old).tables.ai_failures.length,0);service.restore(old);assert.equal(diagnostics.list().items[0].source,'legacy');}
+  for(const version of [1,2]){const old=structuredClone(backup) as any;old.version=version;delete old.tables.ai_failures;delete old.tables.exam_qa_turns;if(version===1)delete old.tables.exam_annotations;assert.equal(validateBackup(old).tables.ai_failures.length,0);service.restore(old);assert.equal(diagnostics.list().items[0].source,'legacy');}
   service.restore(backup);
   for(const mutate of [(copy:any)=>copy.tables.ai_failures[0].exam_id='missing',(copy:any)=>copy.tables.ai_failures[0].question_id='missing',(copy:any)=>copy.tables.ai_failures[0].detail='access_token=secret',(copy:any)=>copy.tables.ai_failures[0].unknown='unexpected']){const broken=structuredClone(backup);mutate(broken);assert.throws(()=>service.restore(broken),(error:any)=>error.code==='INVALID_BACKUP');assert.equal(diagnostics.list().total,1);}
 });

@@ -63,7 +63,7 @@ type DeleteScope = typeof scopes[number];
 interface DeleteRequest { scope: DeleteScope; id?: string }
 export interface DataCounts {
   exams: number; answers: number; grades: number; mistakes: number; saved: number;
-  conversations: number; messages: number; cache: number; reports: number; gradingEvents: number; annotations: number; diagnostics: number;
+  conversations: number; messages: number; cache: number; reports: number; gradingEvents: number; annotations: number; discussions: number; diagnostics: number;
 }
 interface StoredPreview {
   request: DeleteRequest;
@@ -77,7 +77,7 @@ const labels: Record<DeleteScope, string> = {
   cache: '全部讲解缓存', all: '全部个人学习记录',
 };
 const emptyCounts = (): DataCounts => ({ exams: 0, answers: 0, grades: 0, mistakes: 0, saved: 0,
-  conversations: 0, messages: 0, cache: 0, reports: 0, gradingEvents: 0, annotations: 0, diagnostics: 0 });
+  conversations: 0, messages: 0, cache: 0, reports: 0, gradingEvents: 0, annotations: 0, discussions: 0, diagnostics: 0 });
 const objectInput = (input: unknown): Record<string, unknown> => {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new LearningError('数据操作参数无效。', 'INVALID_DELETE_REQUEST');
   return input as Record<string, unknown>;
@@ -119,8 +119,8 @@ export class DataManagementService {
     const { counts } = snapshot;
     this.previews.set(token, { request, ...snapshot, expiresAt });
     const warning = scope === 'exam' || scope === 'exams'
-      ? '将一并删除关联答案、评分、词句标记与解析、失败诊断、当前关联的错题、纠错报告与评分事件，知识点统计会随之更新。'
-      : scope === 'all' ? '将清空试卷、答案、评分、词句标记与解析、全部失败诊断、错题、收藏、讲解对话及缓存，知识点统计也将清空。'
+      ? '将一并删除关联答案、评分、词句标记与解析、本题直接问答、失败诊断、当前关联的错题、纠错报告与评分事件，知识点统计会随之更新。'
+      : scope === 'all' ? '将清空试卷、答案、评分、词句标记与解析、本题直接问答、全部失败诊断、错题、收藏、讲解对话及缓存，知识点统计也将清空。'
       : scope === 'conversation' || scope === 'conversations' ? '将删除对话及其全部消息和关联失败诊断；讲解缓存需另行删除。'
       : scope === 'cache' ? '删除缓存后，再次请求 AI 讲解时需要重新生成；现有讲解对话仍保留。'
       : scope === 'mistakes' ? '仅清空错题本，试卷、答案和评分仍保留。'
@@ -170,7 +170,7 @@ export class DataManagementService {
   private allCounts(): DataCounts {
     return { exams: this.count('exams'), answers: this.count('answers'), grades: this.count('grades'), mistakes: this.count('mistakes'),
       saved: this.count('saved'), conversations: this.count('conversations'), messages: this.count('messages'),
-      cache: this.count('explanation_cache'), reports: this.count('reports'), gradingEvents: this.count('grading_events'), annotations: this.count('exam_annotations'),diagnostics:this.count('ai_failures') };
+      cache: this.count('explanation_cache'), reports: this.count('reports'), gradingEvents: this.count('grading_events'), annotations: this.count('exam_annotations'),discussions:this.count('exam_qa_turns'),diagnostics:this.count('ai_failures') };
   }
   private countsFor({ scope, id }: DeleteRequest): DataCounts {
     if (scope === 'all') return this.allCounts();
@@ -185,6 +185,7 @@ export class DataManagementService {
       counts.reports = this.count('reports', where, params);
       counts.gradingEvents = this.count('grading_events', where, params);
       counts.annotations = this.count('exam_annotations', where, params);
+      counts.discussions = this.count('exam_qa_turns', where, params);
       counts.diagnostics = this.count('ai_failures',id?'exam_id=?':'exam_id IS NOT NULL',params);
     } else if (scope === 'conversation' || scope === 'conversations') {
       counts.conversations = this.count('conversations', id ? 'id=?' : '', id ? [id] : []);

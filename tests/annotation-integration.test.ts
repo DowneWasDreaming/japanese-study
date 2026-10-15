@@ -42,11 +42,11 @@ test('annotation backups round-trip, legacy v1 restores, and pending work become
   assert.equal(completed.status, 'completed');
   assert.equal(service.getExam(id).score, beforeScore);
   const backup = service.backup();
-  assert.equal(backup.version, 3);
+  assert.equal(backup.version, 4);
   assert.equal(backup.tables.exam_annotations.length, 1);
   assert.equal(validateBackup(backup).tables.exam_annotations.length, 1);
   const legacy = structuredClone(backup) as any;
-  legacy.version = 1; delete legacy.tables.exam_annotations; delete legacy.tables.ai_failures;
+  legacy.version = 1; delete legacy.tables.exam_annotations; delete legacy.tables.ai_failures; delete legacy.tables.exam_qa_turns;
   assert.deepEqual(validateBackup(legacy).tables.exam_annotations, []);
   const restore = service.restore(legacy);
   assert.equal(service.annotations.list(id).items.length, 0);

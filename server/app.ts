@@ -83,7 +83,7 @@ export function createApplication(config: ReturnType<typeof getConfig>, db: Data
     // One explicit user action can retry a previously paused upstream request.
     // Within that action the model still reuses known quota failures, avoiding a
     // burst of identical outbound calls while processing a whole paper.
-    const aiAction = req.method === 'POST' && (/^\/exams(?:$|\/[^/]+\/(?:feedback|submit|retry|annotations\/explain)$)/.test(req.path)
+    const aiAction = req.method === 'POST' && (/^\/exams(?:$|\/[^/]+\/(?:feedback|submit|retry|annotations\/explain|discussion(?:\/[^/]+\/reply)?)$)/.test(req.path)
       || req.path === '/explain' || /^\/conversations\/[^/]+\/messages$/.test(req.path));
     if (aiAction && !learning.isBusy() && !connectionTask) model.resetFailurePause();
     next();

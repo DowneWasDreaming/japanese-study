@@ -604,5 +604,52 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--green); }
 .diagnostics-official { border-top: 1px solid var(--line); padding-top: 18px; line-height: 2; }
 .diagnostics-official .text-button { margin-left: 8px; }
 .annotation-failure-detail .diagnostics-link { font-size: 10px; }
+
+/* Free-form questions stay beside the exercise they discuss. */
+.exam-discussion { margin-top: 25px; border: 1px solid var(--line); border-radius: 7px; min-width: 0; background: var(--panel); }
+.exam-discussion[hidden] { display: none; }
+.discussion-toggle { width: 100%; display: flex; align-items: center; gap: 11px; padding: 15px 17px; border: 0; border-radius: 7px; background: var(--green-soft); text-align: left; color: var(--green); cursor: pointer; }
+.discussion-toggle > span { flex: 1; min-width: 0; }
+.discussion-toggle strong { display: block; font-size: 12px; font-weight: 500; line-height: 1.8; }
+.discussion-toggle small { display: block; font-size: 10px; color: var(--muted); line-height: 1.9; margin-top: 3px; }
+.discussion-toggle > svg { flex: 0 0 auto; }
+.exam-discussion.expanded .discussion-toggle > svg:last-child { transform: rotate(180deg); }
+.discussion-body { padding: 19px; min-width: 0; }
+.discussion-context { font-size: 11px; line-height: 1.95; color: var(--muted); margin: 0 0 15px; }
+.discussion-body .notice-box { margin: 12px 0; }
+.discussion-body .notice-box a { color: var(--green); text-decoration: underline; margin-left: 6px; }
+.discussion-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 15px; margin: 13px 0 16px; color: var(--muted); font-size: 10px; line-height: 1.9; }
+.discussion-toolbar > span { display: inline-flex; align-items: center; gap: 6px; }
+.discussion-toolbar .text-button { font-size: 10px; }
+.discussion-turns { display: grid; gap: 15px; }
+.discussion-turn { min-width: 0; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+.discussion-turn-meta { display: flex; align-items: center; gap: 10px; background: var(--soft); padding: 10px 13px; font-size: 10px; color: var(--green); }
+.discussion-turn-meta > time { margin-left: auto; color: var(--muted); font-size: 9px; }
+.discussion-turn-meta > .icon-button { flex: 0 0 auto; padding: 4px; color: var(--muted); }
+.discussion-question { font-size: 12px; line-height: 2; color: var(--ink); padding: 13px 15px; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.discussion-answer { border-top: 1px solid var(--line); padding: 15px; }
+.discussion-answer > div:first-child { display: flex; align-items: center; gap: 6px; color: var(--green); margin-bottom: 10px; }
+.discussion-answer strong { font-size: 10px; font-weight: 500; }
+.discussion-answer time { font-size: 9px; color: var(--muted); margin-left: auto; }
+.discussion-answer .prose-text { font-size: 12px; line-height: 2; white-space: pre-wrap; overflow-wrap: anywhere; }
+.discussion-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--line); padding: 12px 15px; color: var(--muted); font-size: 10px; line-height: 1.9; }
+.discussion-status > svg { flex: 0 0 auto; }
+.discussion-status > .button { margin-left: auto; }
+.discussion-failure, .discussion-error { background: color-mix(in srgb, var(--red) 4%, var(--panel)); padding: 13px 15px; color: var(--red); font-size: 11px; line-height: 1.95; overflow-wrap: anywhere; }
+.discussion-failure { border-top: 1px solid var(--line); }
+.discussion-error { border: 1px solid color-mix(in srgb, var(--red) 25%, var(--line)); border-radius: 5px; margin-bottom: 15px; }
+.discussion-failure strong, .discussion-error strong { font-weight: 500; }
+.discussion-failure p, .discussion-error p { margin: 5px 0; white-space: pre-wrap; }
+.discussion-failure > small { color: var(--muted); font-size: 9px; }
+.discussion-failure > div { display: flex; align-items: center; gap: 10px 15px; flex-wrap: wrap; margin-top: 9px; }
+.discussion-failure .diagnostics-link, .discussion-error .diagnostics-link { margin: 0; font-size: 10px; }
+.discussion-form { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 17px; }
+.discussion-form .form-field { font-size: 11px; }
+.discussion-form textarea { font-size: 12px; line-height: 1.9; resize: vertical; min-height: 98px; }
+.discussion-form > .small-muted { margin-top: 13px; line-height: 1.9; }
+.discussion-send { display: flex; justify-content: space-between; align-items: center; gap: 10px 15px; flex-wrap: wrap; margin-top: 12px; }
+.discussion-send > span { font-size: 9px; color: var(--muted); line-height: 1.8; }
+.discussion-send .button { margin-left: auto; }
+@media (max-width: 720px) { .discussion-toggle { padding: 13px; gap: 9px; } .discussion-toggle strong { font-size: 11px; } .discussion-toggle small { font-size: 9px; } .discussion-body { padding: 14px; } .discussion-context { font-size: 10px; } .discussion-turn-meta { padding: 9px 11px; gap: 7px; } .discussion-question, .discussion-answer { padding: 12px; } .discussion-question, .discussion-answer .prose-text { font-size: 11px; } .discussion-status { padding: 12px; align-items: flex-start; } .discussion-status > .button { margin-left: 0; } .discussion-failure, .discussion-error { padding: 12px; } .discussion-send { align-items: flex-end; } .discussion-send .button { max-width: 100%; font-size: 10px; gap: 5px; padding: 10px 12px; } }
 @media (max-width: 950px) { .diagnostics-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } .diagnostics-scope { grid-column: 1 / -1; } }
 @media (max-width: 720px) { .exam-diagnostics-entry { margin: -11px 0 15px; justify-content: flex-start; } .diagnostic-card { padding: 20px; } .diagnostic-card-meta time { margin-left: 0; width: 100%; margin-top: 4px; } .diagnostic-card h2 { font-size: 13px; } .diagnostics-filters { gap: 17px 12px; } .diagnostic-facts { grid-template-columns: 1fr; padding: 14px; gap: 13px; } .diagnostic-card-actions { gap: 12px; } .diagnostics-intro p { font-size: 10px; } .diagnostics-total { flex-wrap: wrap; gap: 7px; } .diagnostics-official .text-button { display: flex; margin-left: 0; margin-top: 7px; } }

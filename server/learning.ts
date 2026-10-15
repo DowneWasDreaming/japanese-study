@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { transaction } from './db.js';
 import { questionTypes, type Question, type QuestionType } from './seed.js';
 import { AnnotationService, annotationRowSchema, validateAnnotationRecord } from './annotations.js';
+import { ExamDiscussionService, qaTurnRowSchema, validateQATurnRecord } from './exam-discussions.js';
 import { FailureDiagnostics, failureRowSchema, validateFailureRecord } from './diagnostics.js';
 
 export interface AIProvider { generate(messages: { role: 'user' | 'assistant' | 'developer'; content: string }[], model?: string): Promise<string>; }
@@ -88,11 +89,13 @@ export class LearningService {
   private pendingGenerations = 0;
   private backupDir:string;
   readonly annotations:AnnotationService;
+  readonly discussions:ExamDiscussionService;
   readonly diagnostics:FailureDiagnostics;
   constructor(public readonly db:DatabaseSync,private ai?:AIProvider,options:{backupDir?:string;diagnostics?:FailureDiagnostics}={}) {
     this.backupDir=resolve(options.backupDir||'.local/data/backups');
     this.diagnostics=options.diagnostics||new FailureDiagnostics(db);
-    this.annotations=new AnnotationService(db,ai,{isBusy:()=>this.pendingGenerations>0||this.flights.size>0,diagnostics:this.diagnostics});
+    this.annotations=new AnnotationService(db,ai,{isBusy:()=>this.pendingGenerations>0||this.flights.size>0||!!this.discussions?.isBusy(),diagnostics:this.diagnostics});
+    this.discussions=new ExamDiscussionService(db,ai,{isBusy:()=>this.pendingGenerations>0||this.flights.size>0||this.annotations.isBusy(),diagnostics:this.diagnostics});
     // A crashed process cannot still own a grading operation; completed grades survive.
     this.recoverGrades('上次评分因应用退出中断，未完成评分已保留，可重试失败部分。');
     db.prepare("UPDATE exams SET status='partial' WHERE status='grading'").run();
@@ -107,7 +110,7 @@ export class LearningService {
     const task=work();this.flights.set(key,task);
     try{return await task;}finally{if(this.flights.get(key)===task)this.flights.delete(key);}
   }
-  isBusy():boolean { return this.pendingGenerations>0||this.flights.size>0||this.annotations.isBusy(); }
+  isBusy():boolean { return this.pendingGenerations>0||this.flights.size>0||this.annotations.isBusy()||this.discussions.isBusy(); }
   private examRow(id:string):ExamRow {
     const row=one(this.db,'SELECT * FROM exams WHERE id=?',id);if(!row)throw new LearningError('找不到这份试卷。','NOT_FOUND',404);return row as ExamRow;
   }
@@ -320,12 +323,14 @@ export class LearningService {
     return {saved:true,updatedAt:now()};
   }
   async feedback(id:string,questionId:string) {
+    if(this.discussions.isBusy())throw new LearningError('有本题问答正在生成，请完成后再评分。','DISCUSSION_BUSY',409);
     const row=this.examRow(id);if(row.mode!=='practice')throw new LearningError('考试模式必须交卷后才能查看反馈。','EXAM_NOT_SUBMITTED',403);
     if(row.submitted_at)return this.getExam(id);
     const q=this.questions(row).find(q=>q.id===questionId);if(!q)throw new LearningError('题目不存在。','NOT_FOUND',404);
     await this.gradeQuestion(row,q);return this.getExam(id);
   }
   async submit(id:string,retry=false) {
+    if(this.discussions.isBusy())throw new LearningError('有本题问答正在生成，请完成后再交卷或重试评分。','DISCUSSION_BUSY',409);
     return this.singleflight(`submit:${id}`,async()=>{
       let row=this.examRow(id);
       if(row.submitted_at&&!retry)return this.getExam(id);
@@ -454,7 +459,7 @@ export class LearningService {
   private snapshot() {
     const tables:Record<string,Row[]>={};
     for(const table of backupTables)tables[table]=rowArray(this.db,`SELECT * FROM ${table}`);
-    return {format:'komorebi-learning',version:3,exportedAt:now(),tables};
+    return {format:'komorebi-learning',version:4,exportedAt:now(),tables};
   }
   createDeletionBackup():string {
     if(this.isBusy())throw new LearningError('有出题、学习或评分请求正在进行，请完成后再删除数据。','DELETE_BUSY',409);
@@ -478,6 +483,7 @@ export class LearningService {
       this.db.prepare("UPDATE exams SET status='partial' WHERE status='grading'").run();
       this.recoverGrades('备份中的评分尚未完成，可重试失败部分。');
       this.annotations.recoverPending('备份中的标记解析尚未完成，可重试未完成部分。');
+      this.discussions.recoverPending('备份中的本题回答尚未完成，问题已保留，可查看失败原因后重新回答。');
       this.diagnostics.importLegacy();
     });
     return {restored:true,beforeRestoreBackup:file,counts:Object.fromEntries(backupTables.map(t=>[t,backup.tables[t].length]))};
@@ -501,14 +507,15 @@ const tableSchemas={
   messages:z.object({id:z.number().int().positive(),conversation_id:idSchema,role:z.enum(['user','assistant']),content:z.string().min(1).max(100_000),created_at:dt}).strict(),
   explanation_cache:z.object({cache_key:z.string().regex(/^[a-f0-9]{64}$/),kind:z.enum(['word','grammar','sentence']),level:levelSchema,input:textSchema,text:z.string().min(1).max(100_000),created_at:dt}).strict(),
   exam_annotations:annotationRowSchema,
+  exam_qa_turns:qaTurnRowSchema,
   ai_failures:failureRowSchema,
 } satisfies Record<string,z.AnyZodObject>;
 type BackupTable=keyof typeof tableSchemas;
 const backupTables=Object.keys(tableSchemas) as BackupTable[];
 export function validateBackup(input:unknown):{format:string;version:number;exportedAt:string;tables:Record<BackupTable,Row[]>} {
   try {
-    const outer=z.object({format:z.literal('komorebi-learning'),version:z.union([z.literal(1),z.literal(2),z.literal(3)]),exportedAt:dt,tables:z.record(z.array(z.record(z.unknown())).max(100_000))}).strict().parse(input);
-    const expectedTables=backupTables.filter(table=>!(outer.version<2&&table==='exam_annotations')&&!(outer.version<3&&table==='ai_failures'));
+    const outer=z.object({format:z.literal('komorebi-learning'),version:z.union([z.literal(1),z.literal(2),z.literal(3),z.literal(4)]),exportedAt:dt,tables:z.record(z.array(z.record(z.unknown())).max(100_000))}).strict().parse(input);
+    const expectedTables=backupTables.filter(table=>!(outer.version<2&&table==='exam_annotations')&&!(outer.version<3&&table==='ai_failures')&&!(outer.version<4&&table==='exam_qa_turns'));
     if(Object.keys(outer.tables).sort().join(',')!==[...expectedTables].sort().join(','))throw new Error('未知或缺失的数据表');
     const tables={} as Record<BackupTable,Row[]>;
     for(const table of backupTables)tables[table]=(outer.tables[table]||[]).map(row=>tableSchemas[table].parse(row));
@@ -565,6 +572,13 @@ export function validateBackup(input:unknown):{format:string;version:number;expo
       const examCount=(annotationsPerExam.get(examKey)||0)+1;const questionCount=(annotationsPerQuestion.get(questionKey)||0)+1;
       if(examCount>40||questionCount>8)throw new Error('标记数量超出限制');annotationsPerExam.set(examKey,examCount);annotationsPerQuestion.set(questionKey,questionCount);
     }
+    const qaRequests=new Set<string>();
+    for(const r of tables.exam_qa_turns){
+      const qs=exams.get(String(r.exam_id));if(!qs)throw new Error('本题问答引用的试卷不存在');
+      validateQATurnRecord(r,qs);
+      if(r.status!=='queued'&&!tables.exams.find(exam=>exam.id===r.exam_id)?.submitted_at)throw new Error('交卷前不能已有本题回答');
+      const requestKey=JSON.stringify([r.exam_id,r.client_request_id]);if(qaRequests.has(requestKey))throw new Error('重复的本题提问请求编号');qaRequests.add(requestKey);
+    }
     // Detect duplicate primary keys before a pre-restore file is written.
     for(const r of tables.ai_failures){
       const failure=validateFailureRecord(r);
@@ -577,8 +591,8 @@ export function validateBackup(input:unknown):{format:string;version:number;expo
       if(ids.length&&(!failure.exam_id||!failure.question_id))throw new Error('标记诊断缺少试卷或题目');
       for(const annotationId of ids){const mark=tables.exam_annotations.find(a=>a.id===annotationId);if(mark&&(mark.exam_id!==failure.exam_id||mark.question_id!==failure.question_id))throw new Error('诊断标记引用不一致');}
     }
-    const keys:Record<BackupTable,string[]>={content:['id'],question_bank:['id'],saved:['content_id','type'],exams:['id'],answers:['exam_id','question_id'],grades:['exam_id','question_id'],mistakes:['question_id'],grading_events:['exam_id','question_id'],reports:['id'],conversations:['id'],messages:['id'],explanation_cache:['cache_key'],exam_annotations:['id'],ai_failures:['id']};
+    const keys:Record<BackupTable,string[]>={content:['id'],question_bank:['id'],saved:['content_id','type'],exams:['id'],answers:['exam_id','question_id'],grades:['exam_id','question_id'],mistakes:['question_id'],grading_events:['exam_id','question_id'],reports:['id'],conversations:['id'],messages:['id'],explanation_cache:['cache_key'],exam_annotations:['id'],exam_qa_turns:['id'],ai_failures:['id']};
     for(const table of backupTables){const values=tables[table].map(r=>JSON.stringify(keys[table].map(k=>r[k])));if(new Set(values).size!==values.length)throw new Error('重复主键');}
-    return {...outer,version:3,tables};
+    return {...outer,version:4,tables};
   } catch {throw new LearningError('备份格式、版本、字段或数据关联校验失败，当前学习数据未改变。','INVALID_BACKUP',400);}
 }
