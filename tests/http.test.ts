@@ -99,6 +99,13 @@ test('HTTP study flow persists drafts, grades once, records knowledge and confir
     assert.equal(failedAI.json.status, 'partial', '未授权的 AI 判卷不能悄悄改回本机评分');
     const failedGrade = failedAI.json.grades[aiExam.questions[0].id];
     assert.equal(failedGrade.status, 'failed'); assert.equal(failedGrade.score, null);
+    const annotationInput = { questionId: aiExam.questions[0].id, source: 'prompt', start: 0, end: 3, text: aiExam.questions[0].prompt.slice(0, 3) };
+    const markWithoutAuth = await call('/api/exams/' + aiExam.id + '/annotations', annotationInput);
+    assert.equal(markWithoutAuth.status, 200); assert.equal(markWithoutAuth.json.items.length, 1);
+    const noAuthAnalysis = await call('/api/exams/' + aiExam.id + '/annotations/explain', {});
+    assert.equal(noAuthAnalysis.status, 200); assert.equal(noAuthAnalysis.json.items[0].status, 'failed');
+    assert.match(noAuthAnalysis.json.items[0].error, /PLAN_PERMISSION_REQUIRED/);
+    assert.deepEqual((await call('/api/exams/' + aiExam.id)).json.grades, failedAI.json.grades, '标记解析权限失败不能改动既有评分');
     assert.equal((await call('/api/exams/' + aiExam.id + '/grading-mode', { gradingMode: 'mixed' }, 'PUT')).status, 409);
     validateBackup((await call('/api/backup')).json);
     assert.equal((await call('/api/restore', beforeDelete)).status, 200);
@@ -117,6 +124,8 @@ test('HTTP study flow persists drafts, grades once, records knowledge and confir
       assert.equal((await call('/api/data/summary')).json.busy, true);
       assert.equal((await call('/api/data/delete-preview', { scope: 'all' })).status, 409);
       assert.equal((await call('/api/restore', beforeDelete)).status, 409);
+      assert.equal((await call('/api/exams/' + id + '/annotations', { questionId: exam.questions[0].id, source: 'prompt', start: 0, end: 1, text: exam.questions[0].prompt.slice(0, 1) })).status, 409);
+      assert.equal((await call('/api/exams/' + id + '/annotations/explain', {})).status, 409);
     } finally {
       releaseCatalog(); await pendingConnection;
       auth.status = originalStatus; model.listModels = originalCatalog;

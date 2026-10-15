@@ -7,9 +7,15 @@ export function openDatabase(path: string = resolve('data', 'learning.sqlite')):
   if (path !== ':memory:') mkdirSync(dirname(resolve(path)), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;');
-  const migration = readFileSync(fileURLToPath(new URL('../migrations/001.sql', import.meta.url)), 'utf8');
-  db.exec(migration);
-  db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?,?)').run(1, new Date().toISOString());
+  db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
+  for (const [version, filename] of [[1, '001.sql'], [2, '002.sql']] as const) {
+    if (db.prepare('SELECT version FROM schema_migrations WHERE version=?').get(version)) continue;
+    const migration = readFileSync(fileURLToPath(new URL(`../migrations/${filename}`, import.meta.url)), 'utf8');
+    transaction(db, () => {
+      db.exec(migration);
+      db.prepare('INSERT INTO schema_migrations(version, applied_at) VALUES(?,?)').run(version, new Date().toISOString());
+    });
+  }
   return db;
 }
 

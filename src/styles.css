@@ -327,6 +327,68 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--green); }
 .option-marker { font: 13px "Georgia", serif; width: 25px; height: 25px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); background: var(--soft); border-radius: 4px; text-transform: uppercase; }
 .answer-option.selected .option-marker { background: var(--green); color: var(--panel); }
 .answer-option > svg { margin-left: auto; color: var(--green); }
+.markable-text { user-select: text; -webkit-user-select: text; overflow-wrap: anywhere; }
+.annotation-highlight { color: var(--ink); background: #eadb9680; border-bottom: 2px solid #b99a3d; border-radius: 2px; padding: 0; }
+.annotation-highlight.overlapping { background: #e7ce75b0; border-bottom-color: #92741e; }
+:root[data-theme="dark"] .annotation-highlight { background: #74632b80; border-bottom-color: #d5b557; }
+:root[data-theme="dark"] .annotation-highlight.overlapping { background: #8e733e90; border-bottom-color: #ebc765; }
+.annotation-quick-add { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 0 0 15px; margin-bottom: 15px; border-bottom: 1px solid var(--line); }
+.annotation-quick-add > span { color: var(--muted); font-size: 10px; line-height: 1.8; }
+.annotation-quick-add > span svg { margin-right: 5px; }
+.annotation-quick-add > button { white-space: nowrap; }
+.annotations-panel { margin: 0 0 25px; }
+.annotations-panel .section-heading { align-items: flex-start; margin-bottom: 15px; }
+.annotations-panel h2 { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.annotation-count { color: var(--muted); font-size: 10px; font-weight: 400; letter-spacing: 0; }
+.annotation-loading, .annotation-empty { display: flex; align-items: center; gap: 9px; margin-top: 17px; }
+.annotation-empty { color: var(--muted); font-size: 11px; line-height: 1.9; }
+.annotation-progress { margin-top: 16px; }
+.annotation-progress .text-button { margin-left: 8px; }
+.annotation-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 18px 0 0; }
+.annotation-actions > p { flex-basis: 100%; }
+.annotation-actions a { color: var(--green); margin-left: 5px; text-decoration: underline; }
+.annotation-list-container { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 15px; }
+.annotation-list-container > summary { color: var(--green); cursor: pointer; font-size: 12px; line-height: 1.9; }
+.annotation-list { display: grid; gap: 13px; margin-top: 16px; }
+.annotation-card { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 17px 19px; min-width: 0; }
+.annotation-card-top { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 10px; }
+.annotation-card-top > span:nth-child(2) { margin-left: auto; }
+.annotation-card blockquote { color: var(--ink); background: var(--soft); border-left: 3px solid #b99a3d; border-radius: 3px; padding: 12px 15px; margin: 15px 0 0; font-size: 15px; line-height: 1.9; white-space: pre-wrap; overflow-wrap: anywhere; }
+.annotation-explanation { display: grid; gap: 17px; padding-top: 18px; }
+.annotation-explanation h4 { color: var(--green); font-size: 11px; font-weight: 500; margin-bottom: 7px; }
+.annotation-explanation p { color: var(--ink); font-size: 12px; line-height: 1.95; white-space: pre-wrap; overflow-wrap: anywhere; }
+.annotation-example { margin-top: 10px; padding-left: 12px; border-left: 1px solid var(--line); }
+.annotation-example p + p { color: var(--muted); font-size: 11px; }
+.annotation-completed { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; }
+.annotation-inline-warning { color: var(--red); font-size: 11px; line-height: 1.9; margin-top: 12px; }
+.annotation-error { display: flex; gap: 9px; background: var(--soft); color: var(--red); border-radius: 5px; padding: 13px; margin-top: 15px; font-size: 11px; line-height: 1.9; }
+.annotation-error > svg { margin-top: 3px; }
+.annotation-error .text-button { color: var(--red); margin: 8px 16px 0 0; }
+.annotation-selection-toolbar { position: fixed; z-index: 85; left: 50%; bottom: 22px; transform: translateX(-50%); display: flex; align-items: center; gap: 12px; padding: 11px 13px; background: var(--panel); border: 1px solid var(--green); border-radius: 8px; box-shadow: var(--shadow); max-width: calc(100vw - 32px); width: max-content; }
+.annotation-selection-toolbar > div { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--green); }
+.annotation-selection-toolbar > div > span { display: block; max-width: 330px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; }
+.annotation-selection-toolbar > .button { white-space: nowrap; }
+.annotation-add-dialog { width: 730px; }
+.annotation-dialog-intro { margin-bottom: 20px; }
+.annotation-source-preview { background: var(--soft); border: 1px solid var(--line); border-radius: 5px; max-height: 180px; overflow: auto; padding: 15px; margin: 8px 0 20px; font-size: 14px; line-height: 2; white-space: pre-wrap; overflow-wrap: anywhere; }
+.submit-annotation-choice { border: 1px solid var(--line); background: var(--soft); border-radius: 5px; padding: 15px; margin: 17px 0; }
+.submit-annotation-choice > label { display: flex; align-items: flex-start; gap: 9px; font-size: 12px; line-height: 1.9; }
+.submit-annotation-choice input { width: auto; margin-top: 5px; flex-shrink: 0; }
+.submit-annotation-choice > p { margin: 9px 0 0 23px; }
+@media (max-width: 720px) {
+  .annotations-panel .section-heading { flex-wrap: wrap; gap: 13px; }
+  .annotation-quick-add { align-items: flex-start; gap: 9px; }
+  .annotation-quick-add > span { font-size: 9px; }
+  .annotation-card { padding: 14px; }
+  .annotation-card-top { gap: 7px; font-size: 9px; flex-wrap: wrap; }
+  .annotation-card blockquote { font-size: 14px; padding: 10px 12px; }
+  .annotation-selection-toolbar { gap: 8px; bottom: 15px; padding: 9px; }
+  .annotation-selection-toolbar > div > span { max-width: 110px; font-size: 11px; }
+  .annotation-selection-toolbar > div > svg { display: none; }
+  .annotation-selection-toolbar > .button { font-size: 10px; padding: 9px 10px; }
+  .annotation-actions .button { font-size: 10px; }
+  .annotation-source-preview { max-height: 150px; font-size: 12px; }
+}
 .answer-text textarea { font-size: 16px; line-height: 2; }
 .question-bottom { border-top: 1px solid var(--line); margin-top: 32px; padding-top: 22px; display: flex; align-items: center; justify-content: space-between; gap: 13px; flex-wrap: wrap; }
 .question-bottom > .small-muted { display: flex; align-items: center; gap: 5px; }

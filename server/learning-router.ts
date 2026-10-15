@@ -23,6 +23,20 @@ export function createLearningRouter(service:LearningService, db:DatabaseSync, a
   router.get('/exams',(_req,res)=>res.json(service.listExams()));
   router.post('/exams',async(req,res)=>res.json(await service.createExam(req.body)));
   router.get('/exams/:id',(req,res)=>res.json(service.getExam(routeId(req))));
+  router.get('/exams/:id/annotations',(req,res)=>res.json(service.annotations.list(routeId(req))));
+  router.post('/exams/:id/annotations',(req,res)=>{
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再保存标记。','ANNOTATIONS_BUSY',409);
+    res.json(service.annotations.add(routeId(req),req.body));
+  });
+  router.delete('/exams/:id/annotations/:annotationId',(req,res)=>{
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再调整标记。','ANNOTATIONS_BUSY',409);
+    res.json(service.annotations.remove(routeId(req),String(req.params.annotationId)));
+  });
+  router.post('/exams/:id/annotations/explain',async(req,res)=>{
+    const options=z.object({retryFailedOnly:z.boolean().optional()}).strict().parse(req.body);
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再解析标记。','ANNOTATIONS_BUSY',409);
+    res.json(await service.annotations.explain(routeId(req),options));
+  });
   router.put('/exams/:id/grading-mode',(req,res)=>{
     if(busy())throw new LearningError('有出题、学习或评分请求正在进行，请完成后再修改判卷方式。','GRADING_MODE_BUSY',409);
     res.json(service.setGradingMode(routeId(req),req.body));
