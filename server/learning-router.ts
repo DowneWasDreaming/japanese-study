@@ -11,6 +11,7 @@ export function createLearningRouter(service:LearningService, db:DatabaseSync, a
   const router=Router();
   const busy=()=>service.isBusy()||additionalBusy();
   const data=new DataManagementService(db,{isBusy:busy,backup:()=>service.createDeletionBackup()});
+  router.get('/diagnostics',(req,res)=>res.json(service.diagnostics.list(req.query)));
   router.get('/dashboard',(_req,res)=>res.json(service.dashboard()));
   router.get('/knowledge',(req,res)=>res.json(knowledgePoints(db,{level:queryString(req,'level'),q:queryString(req,'q')})));
   router.get('/data/summary',(_req,res)=>res.json(data.summary()));

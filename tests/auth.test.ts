@@ -220,6 +220,28 @@ test('temporary refresh failure preserves credentials and does not endlessly ret
   assert.equal(f.manager.status().connected,true);assert.equal((await f.persisted()).registrations[0].refreshToken,'mock-refresh-original');
 });
 
+test('refresh network and invalid JSON failures retain safe stage metadata and preserve the existing credential',async t => {
+  const f=await fixture(t);await f.connect();f.advance(3600000);
+  f.changeRefresh(() => {throw new TypeError('fetch failed',{cause:Object.assign(new Error('connect ETIMEDOUT auth.openai.com'),{code:'ETIMEDOUT'})});});
+  await assert.rejects(f.manager.getAccessToken(),(error:unknown) => {
+    assert.ok(error instanceof IntegrationError);assert.equal(error.code,'OPENAI_NETWORK_ERROR');
+    assert.equal(error.diagnostics.stage,'oauth-token-refresh');assert.equal(error.diagnostics.networkCode,'ETIMEDOUT');
+    assert.equal(error.diagnostics.upstreamStatus,undefined);return true;
+  });
+  f.changeRefresh(() => new Response(JSON.stringify({access_token:'mock-sensitive-invalid-json'}).slice(0,-1)+',',{
+    headers:{'Content-Type':'application/json','x-request-id':'refresh-invalid-json-request'},
+  }));
+  await assert.rejects(f.manager.getAccessToken(),(error:unknown) => {
+    assert.ok(error instanceof IntegrationError);assert.equal(error.code,'REFRESH_RESPONSE_INVALID');
+    assert.equal(error.diagnostics.upstreamStatus,200);assert.equal(error.diagnostics.stage,'oauth-token-refresh');
+    assert.equal(error.diagnostics.requestId,'refresh-invalid-json-request');assert.equal(error.diagnostics.reason,'invalid_json');
+    assert.ok(!JSON.stringify(error).includes('mock-sensitive-invalid-json'));return true;
+  });
+  assert.equal(f.manager.status().connected,true);
+  assert.equal((await f.persisted()).registrations[0].refreshToken,'mock-refresh-original');
+  assert.equal(f.manager.status().lastError?.requestId,'refresh-invalid-json-request');
+});
+
 test('returning authorization refuses another identity and preserves the original connection',async t => {
   const f=await fixture(t);await f.connect();f.changeIdentity({subject:'different-subject'});const a=await f.begin();
   await assert.rejects(f.manager.callback(f.parameters(a.authorization)),{code:'OAUTH_ACCOUNT_MISMATCH'});

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { transaction } from './db.js';
 import type { AIProvider } from './learning.js';
 import type { Question } from './seed.js';
+import { FailureDiagnostics } from './diagnostics.js';
 
 const limits={perExam:40,perQuestion:8,maxText:500} as const;
 const idSchema=z.string().min(1).max(200);
@@ -92,6 +93,7 @@ export function validateAnnotationRecord(input:unknown,questions?:Question[]):An
 }
 
 function safeFailure(error:unknown):string {
+  if(error instanceof z.ZodError)return 'GPT 已返回内容，但词句解析字段、例句数量或内容长度不符合要求。具体字段原因已保存在失败记录中。（MODEL_OUTPUT_VALIDATION_FAILED）';
   const value=error as {code?:unknown;publicMessage?:unknown};
   const code=typeof value?.code==='string'&&/^[A-Za-z0-9_]{1,100}$/.test(value.code)?value.code:'';
   const publicMessage=typeof value?.publicMessage==='string'?value.publicMessage:error instanceof AnnotationError?error.message:'';
@@ -104,7 +106,7 @@ function safeFailure(error:unknown):string {
     MODEL_STREAM_INTERRUPTED:'模型响应中断，标记解析尚未完成，请重试。',MODEL_RESPONSE_INCOMPLETE:'模型响应未完成，请重试未完成的标记。',
     MODEL_UNAVAILABLE:'所选模型不可用，请重新选择当前账号可用的模型。',
   };
-  return (messages[code]||'标记解析暂未完成，请检查连接和套餐权限后重试。')+(code?`（${code}）`:'');
+  return (messages[code]||'标记解析未完成，具体原因已保存。请查看失败详情与历史，再决定是否重试。')+(code?`（${code}）`:'');
 }
 function responseJson(text:string):unknown {
   try{return JSON.parse(text.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''));}
@@ -114,8 +116,17 @@ type Exam={id:string;submitted_at:string|null;questions_json:string;config_json:
 
 export class AnnotationService {
   private flights=new Map<string,Promise<ReturnType<AnnotationService['list']>>>();
-  constructor(private db:DatabaseSync,private ai?:AIProvider,private options:{isBusy?:()=>boolean}={}) {
-    db.prepare("UPDATE exam_annotations SET status='failed',explanation_json=NULL,error='上次标记解析因应用退出中断，请重试。',updated_at=? WHERE status='pending'").run(now());
+  private readonly diagnostics:FailureDiagnostics;
+  constructor(private db:DatabaseSync,private ai?:AIProvider,private options:{isBusy?:()=>boolean;diagnostics?:FailureDiagnostics}={}) {
+    this.diagnostics=options.diagnostics||new FailureDiagnostics(db);
+    this.recoverPending('上次标记解析因应用退出中断，可重试未完成部分。');
+  }
+  recoverPending(message:string) {
+    const pending=this.db.prepare("SELECT id,exam_id,question_id FROM exam_annotations WHERE status='pending'").all();
+    const groups=new Map<string,typeof pending>();
+    for(const row of pending){const key=JSON.stringify([row.exam_id,row.question_id]);const group=groups.get(key)||[];group.push(row);groups.set(key,group);}
+    for(const group of groups.values())this.diagnostics.record({code:'ANNOTATION_INTERRUPTED',publicMessage:message},{operation:'annotation',examId:String(group[0].exam_id),questionId:String(group[0].question_id),annotationIds:group.map(row=>String(row.id)),source:'recovery',stage:'pending-recovery'});
+    this.db.prepare("UPDATE exam_annotations SET status='failed',explanation_json=NULL,error=?,updated_at=? WHERE status='pending'").run(message,now());
   }
   isBusy() {return this.flights.size>0;}
   private guardMutation() {
@@ -199,6 +210,7 @@ export class AnnotationService {
           for(const row of completed)update.run(row.explanation_json,row.updated_at,exam.id,row.id);
         });
       }catch(error){
+        this.diagnostics.record(error,{operation:'annotation',examId:exam.id,questionId,annotationIds:marks.map(mark=>mark.id),model:config.model});
         const message=safeFailure(error);
         transaction(this.db,()=>{const update=this.db.prepare("UPDATE exam_annotations SET status='failed',explanation_json=NULL,error=?,updated_at=? WHERE exam_id=? AND id=? AND status='pending'");for(const mark of marks)update.run(message,now(),exam.id,mark.id);});
       }

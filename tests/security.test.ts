@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import { localBoundary, errorHandler } from '../server/security.js';
 import { DatabaseSync } from 'node:sqlite';
-import { LimitedGenerator } from '../server/quota.js';
+import { RequestCounter } from '../server/quota.js';
 import { request } from 'node:http';
 import { getConfig } from '../server/config.js';
 test('learning and credential directories cannot overlap, including Windows case aliases', () => {
@@ -49,12 +49,15 @@ test('error response suppresses credentials', () => {
   errorHandler(new Error('Bearer secret access_token=private'), {} as never, res as never, () => {});
   assert.ok(!JSON.stringify(response).includes('secret'));
 });
-test('local request limits persist in SQLite and prevent excess calls', async () => {
+test('local request statistics persist but never block requests, including failed attempts', async () => {
   const db = new DatabaseSync(':memory:'); let calls = 0;
-  const inner = { async generate() { calls++; return 'done'; } };
-  const a = new LimitedGenerator(db, inner, 1, 2);
+  const inner = { async generate() { calls++; if(calls===2)throw Object.assign(new Error('upstream test failure'),{code:'UPSTREAM_TEST'});return 'done'; } };
+  const a = new RequestCounter(db, inner);
   await a.generate([{ role: 'user', content: 'こんにちは' }]);
-  const b = new LimitedGenerator(db, inner, 1, 2);
-  await assert.rejects(b.generate([{ role: 'user', content: 'again' }]), { code: 'LOCAL_REQUEST_LIMIT' });
-  assert.equal(calls, 1); assert.equal(b.usage().hour, 1); db.close();
+  const b = new RequestCounter(db, inner);
+  await assert.rejects(b.generate([{ role: 'user', content: 'again' }]), { code: 'UPSTREAM_TEST' });
+  for(let i=0;i<160;i++)await b.generate([{ role:'user',content:'count only' }]);
+  assert.equal(calls,162);assert.equal(b.usage().hour,162);
+  assert.equal(b.usage().day,162);assert.equal(b.usage().limitEnabled,false);
+  assert.equal(b.usage().hourlyLimit,null);assert.equal(b.usage().dailyLimit,null);db.close();
 });

@@ -12,8 +12,10 @@ const config = getConfig();
 const db = openDatabase(config.dbPath);
 seedDatabase(db);
 const auth = new AuthManager({ credentialDir: config.credentialDir, redirectUri: config.origin + '/auth/callback' });
+let authInitFailure: unknown;
 try { await auth.init(); }
 catch (error) {
+  authInitFailure = error;
   console.warn(`ChatGPT 连接暂不可用（${(error as { code?: string }).code || 'AUTH_INIT_FAILED'}），基础学习仍可使用。请在设置中查看错误。`);
 }
 const model = new ModelService(auth, { settingsFile: resolve(config.credentialDir, 'model-settings.json') });
@@ -22,7 +24,8 @@ const desktopToken = process.env.STUDY_DESKTOP_TOKEN;
 delete process.env.STUDY_DESKTOP_TOKEN;
 const desktop = desktopInstance && /^[a-f0-9-]{36}$/.test(desktopInstance) && desktopToken && /^[a-f0-9]{64}$/.test(desktopToken)
   ? { instance: desktopInstance, token: desktopToken, stop } : undefined;
-const { app } = createApplication(config, db, auth, model, desktop);
+const { app, learning } = createApplication(config, db, auth, model, desktop);
+if (authInitFailure) learning.diagnostics.record(authInitFailure, { operation: 'auth', stage: 'startup' });
 const production = process.argv.includes('--production');
 let vite: Awaited<ReturnType<typeof import('vite')['createServer']>> | undefined;
 if (production) {

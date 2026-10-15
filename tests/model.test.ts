@@ -253,3 +253,88 @@ test('HTTP usage failure uses the same pause rule and does not automatically ret
   await assert.rejects(f.service.generate(messages), { code: 'subscription_sharing_usage_limit_exceeded', status: 429 });
   assert.equal(f.inferenceRequests().length, 1);
 });
+
+test('network failures retain the deepest cause code and safe text without inventing an upstream HTTP response',async t => {
+  const f = fixture(t,() => {
+    throw new TypeError('fetch failed',{cause:Object.assign(new Error('getaddrinfo ENOTFOUND api.openai.com'),{code:'ENOTFOUND'})});
+  });
+  await assert.rejects(f.service.generate(messages),(error:unknown) => {
+    assert.ok(error instanceof IntegrationError);
+    assert.equal(error.status,503);assert.equal(error.code,'OPENAI_NETWORK_ERROR');
+    assert.equal(error.diagnostics.stage,'model-request');assert.equal(error.diagnostics.networkCode,'ENOTFOUND');
+    assert.match(error.diagnostics.detail!,/fetch failed → getaddrinfo ENOTFOUND api.openai.com/);
+    assert.equal(error.diagnostics.upstreamStatus,undefined);assert.equal(error.diagnostics.requestId,undefined);
+    return true;
+  });
+});
+
+test('HTTP official detail survives beyond the short page message and an explicit retry clears only the upstream pause',async t => {
+  const official = 'Please review the application usage limit. '.repeat(35);
+  const f = fixture(t,() => Response.json({error:{code:'subscription_sharing_usage_limit_exceeded',message:official,detail:'Usage limit is managed by the account owner.',param:'model'}},
+    {status:429,headers:{'openai-request-id':'upstream-quota-request'}}));
+  const reject = async (stage:string) => assert.rejects(f.service.generate(messages),(error:unknown) => {
+    assert.ok(error instanceof IntegrationError);assert.equal(error.status,429);
+    assert.equal(error.diagnostics.upstreamStatus,429);assert.equal(error.diagnostics.requestId,'upstream-quota-request');
+    assert.equal(error.diagnostics.stage,stage);assert.equal(error.diagnostics.param,'model');
+    assert.ok(error.diagnostics.upstreamMessage!.startsWith(official));
+    assert.ok(error.diagnostics.upstreamMessage!.includes('Usage limit is managed by the account owner.'));
+    assert.ok(error.diagnostics.upstreamMessage!.length > 600);return true;
+  });
+  await reject('model-request');await reject('cached-upstream-error');assert.equal(f.inferenceRequests().length,1);
+  f.service.resetFailurePause();await reject('model-request');assert.equal(f.inferenceRequests().length,2);
+});
+
+test('incomplete stream and official streamed failure preserve HTTP 200, response ID and provider reason separately',async t => {
+  for(const mode of ['incomplete','failure'] as const) await t.test(mode,async sub => {
+    const f = fixture(sub,() => sse([{type:'response.created',response:{id:'resp_test_incomplete'}},delta(),mode === 'incomplete'
+      ? {type:'response.incomplete',response:{id:'resp_test_incomplete',incomplete_details:{reason:'max_output_tokens'}}}
+      : {type:'response.failed',response:{id:'resp_test_incomplete',error:{code:'server_error',message:'The provider could not finish the response.'}}}]));
+    await assert.rejects(f.service.generate(messages),(error:unknown) => {
+      assert.ok(error instanceof IntegrationError);assert.equal(error.diagnostics.upstreamStatus,200);
+      assert.equal(error.diagnostics.requestId,'test-request');assert.equal(error.diagnostics.responseId,'resp_test_incomplete');
+      assert.equal(error.diagnostics.stage,'model-stream');
+      if(mode === 'incomplete') {assert.equal(error.code,'MODEL_RESPONSE_INCOMPLETE');assert.equal(error.diagnostics.reason,'max_output_tokens');}
+      else {assert.equal(error.code,'server_error');assert.equal(error.diagnostics.upstreamMessage,'The provider could not finish the response.');}
+      return true;
+    });
+  });
+});
+
+test('stream read failures keep network cause together with the successful HTTP headers',async t => {
+  let pulls = 0;
+  const f=fixture(t,() => new Response(new ReadableStream<Uint8Array>({pull(controller) {
+    if(pulls++ === 0) controller.enqueue(new TextEncoder().encode(event(delta())));
+    else controller.error(new TypeError('terminated',{cause:Object.assign(new Error('socket closed'),{code:'ECONNRESET'})}));
+  }}),{headers:{'Content-Type':'text/event-stream','X-Request-Id':'stream-socket-request'}}));
+  await assert.rejects(f.service.generate(messages),(error:unknown) => {
+    assert.ok(error instanceof IntegrationError);assert.equal(error.code,'MODEL_STREAM_INTERRUPTED');
+    assert.equal(error.diagnostics.networkCode,'ECONNRESET');assert.equal(error.diagnostics.stage,'model-stream-read');
+    assert.equal(error.diagnostics.upstreamStatus,200);assert.equal(error.diagnostics.requestId,'stream-socket-request');
+    assert.match(error.diagnostics.detail!,/terminated → socket closed/);return true;
+  });
+});
+
+test('non-stream and invalid event failures retain HTTP headers and validation reasons without storing their bodies',async t => {
+  for(const [name,response,reason] of [
+    ['wrong-content-type',() => new Response('not retained response body',{headers:{'Content-Type':'text/html','x-request-id':'validation-request'}}),'unexpected_content_type:text/html'],
+    ['invalid-json',() => new Response('data: invalid private body\n\n',{headers:{'Content-Type':'text/event-stream','x-request-id':'validation-request'}}),'invalid_json'],
+  ] as const) await t.test(name,async sub => {
+    const f=fixture(sub,response);
+    await assert.rejects(f.service.generate(messages),(error:unknown) => {
+      assert.ok(error instanceof IntegrationError);assert.equal(error.code,'MODEL_STREAM_INVALID');
+      assert.equal(error.diagnostics.upstreamStatus,200);assert.equal(error.diagnostics.requestId,'validation-request');
+      assert.equal(error.diagnostics.reason,reason);assert.ok(!JSON.stringify(error).includes('private body'));return true;
+    });
+  });
+});
+
+test('an interrupted official error body still preserves its actual failed HTTP status and request ID',async t => {
+  const f=fixture(t,() => new Response(new ReadableStream({start(controller) {
+    controller.error(new TypeError('response body terminated',{cause:Object.assign(new Error('connection reset'),{code:'ECONNRESET'})}));
+  }}),{status:503,headers:{'x-request-id':'error-body-request'}}));
+  await assert.rejects(f.service.generate(messages),(error:unknown) => {
+    assert.ok(error instanceof IntegrationError);assert.equal(error.code,'OPENAI_RESPONSE_INTERRUPTED');
+    assert.equal(error.status,502);assert.equal(error.diagnostics.upstreamStatus,503);
+    assert.equal(error.diagnostics.networkCode,'ECONNRESET');assert.equal(error.diagnostics.requestId,'error-body-request');return true;
+  });
+});

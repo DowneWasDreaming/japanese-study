@@ -11,16 +11,53 @@ const RESOURCE = 'https://api.openai.com/v1';
 const SCOPES = 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct';
 export const USAGE_URL = 'https://chatgpt.com/settings/usage';
 
+export type IntegrationDiagnostics = {
+  requestId?: string; param?: string; bodyShape?: string; detail?: string;
+  upstreamStatus?: number; upstreamMessage?: string; stage?: string; networkCode?: string; responseId?: string; reason?: string; model?: string;
+};
+
+/** Keep useful official/network text, but never retain credentials or URL queries. */
+export function safeDiagnosticText(value:unknown,maxLength = 6000):string|undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  return value
+    .replace(/\bBearer\s+[^\s,;"'}]+/gi,'Bearer [已隐藏]')
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+){0,2}/g,'[已隐藏令牌]')
+    .replace(/\bsk-[A-Za-z0-9_-]{10,}/g,'[已隐藏密钥]')
+    .replace(/\b(access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|authorization|cookie|set-cookie)\b[\s"':=]+[^\s,;"'}]+/gi,'$1 [已隐藏]')
+    .replace(/(https?:\/\/[^\s?#]+)[?#][^\s]*/gi,'$1?[已隐藏参数]')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g,'')
+    .slice(0,maxLength);
+}
+
+export function networkDiagnostics(error:unknown,stage:string):IntegrationDiagnostics {
+  const chain:string[] = []; let networkCode:string|undefined; let current:unknown = error;
+  const visited = new Set<unknown>();
+  for(let depth=0;depth<4 && current && typeof current === 'object' && !visited.has(current);depth++) {
+    visited.add(current);
+    const value = current as {message?:unknown;code?:unknown;cause?:unknown;name?:unknown};
+    const message = safeDiagnosticText(value.message,1500);
+    if(message && !chain.includes(message)) chain.push(message);
+    if(typeof value.code === 'string' && /^[A-Z0-9_.-]{1,120}$/i.test(value.code)) networkCode = value.code;
+    if(!networkCode && (value.name === 'TimeoutError' || value.name === 'AbortError')) networkCode = value.name;
+    current = value.cause;
+  }
+  return {stage,networkCode,detail:chain.join(' → ').slice(0,6000) || undefined};
+}
+
+export function responseDiagnostics(response:Response,stage:string):IntegrationDiagnostics {
+  return {upstreamStatus:response.status,stage,requestId:safeDiagnosticText(response.headers.get('openai-request-id') || response.headers.get('x-request-id'),160)};
+}
+
 /** Safe metadata is exposed to the UI; token responses and raw tokens are never attached. */
 export class IntegrationError extends Error {
   readonly publicMessage: string;
   constructor(readonly status: number, readonly code: string, message: string,
-    readonly diagnostics: { requestId?: string; param?: string; bodyShape?: string; detail?: string } = {}) {
+    readonly diagnostics: IntegrationDiagnostics = {}) {
     super(message); this.name = 'IntegrationError'; this.publicMessage = message;
   }
 }
 
-export function upstreamError(status: number, body: unknown, requestId?: string): IntegrationError {
+export function upstreamError(status: number, body: unknown, requestId?: string,diagnostics:IntegrationDiagnostics = {}): IntegrationError {
   const data = body && typeof body === 'object' ? body as Record<string, unknown> : {};
   const nested = data.error && typeof data.error === 'object' ? data.error as Record<string, unknown> : {};
   const rawCode = typeof data.error === 'string' ? data.error : nested.code;
@@ -42,13 +79,13 @@ export function upstreamError(status: number, body: unknown, requestId?: string)
     : status === 403 ? 'ChatGPT 拒绝请求，可能存在账号、工作空间、区域或政策限制。'
     : status === 429 ? 'ChatGPT 请求受到限流，请稍后重试并查看使用量设置。'
     : status >= 500 ? 'ChatGPT 服务或套餐路由暂时不可用，请稍后重试。' : 'ChatGPT 请求失败，请检查连接与请求内容。');
-  const detail = typeof data.detail === 'string' ? data.detail : typeof nested.message === 'string' ? nested.message : undefined;
-  // Admission detail is diagnostic text, not a stable code. Reject token-like content.
-  const safeDetail = detail && !/access_token|refresh_token|id_token|Bearer |eyJ[A-Za-z0-9_-]{15}/i.test(detail) ? detail.slice(0,600) : undefined;
-  if (safeDetail) message += ` 官方提示：${safeDetail}`;
+  const official = [nested.message,nested.detail,data.message,data.detail].filter((value):value is string => typeof value === 'string');
+  const safeDetail = safeDiagnosticText([...new Set(official)].join('\n'));
+  if (safeDetail) message += ` 官方提示：${safeDetail.slice(0,600)}`;
   return new IntegrationError(status, code, message, {
-    requestId: requestId?.slice(0,160), param: typeof nested.param === 'string' ? nested.param.slice(0,80) : undefined,
-    bodyShape: Object.keys(data).sort().join(','), detail: safeDetail,
+    upstreamStatus:status,stage:'upstream-response',...diagnostics,
+    requestId: safeDiagnosticText(requestId,160), param: safeDiagnosticText(nested.param,80),
+    bodyShape: Object.keys(data).filter(key => /^[a-zA-Z0-9_.-]{1,80}$/.test(key)).sort().join(',').slice(0,600), detail: safeDetail,upstreamMessage:safeDetail,
   });
 }
 
@@ -99,7 +136,7 @@ export class AuthManager {
   private refreshing?: Promise<string>;
   private generation = 0;
   private saving: Promise<void> = Promise.resolve();
-  private lastError: {code:string;message:string;status:number;requestId?:string} | null = null;
+  private lastError: ({code:string;message:string;status:number} & IntegrationDiagnostics) | null = null;
 
   constructor(options: AuthOptions) {
     this.credentialDir = resolve(options.credentialDir);
@@ -146,22 +183,35 @@ export class AuthManager {
   }
   private async discovery(): Promise<Discovery> {
     return this.discoveryPromise ||= (async () => {
-      const response = await this.request(`${ISSUER}/.well-known/openid-configuration`);
-      if (!response.ok) throw upstreamError(response.status, await this.readBody(response), this.requestId(response));
-      const value = await response.json() as Discovery;
-      const endpoint = (url:string) => new URL(url).origin === ISSUER && new URL(url).protocol === 'https:';
-      if (value.issuer !== ISSUER || ![value.authorization_endpoint,value.token_endpoint,value.jwks_uri].every(x => typeof x === 'string' && endpoint(x)) || (value.revocation_endpoint && !endpoint(value.revocation_endpoint))) {
-        throw new IntegrationError(502,'INVALID_DISCOVERY','OpenAI 身份服务发现信息未通过安全校验。');
+      const response = await this.request(`${ISSUER}/.well-known/openid-configuration`,{},'auth-discovery');
+      if (!response.ok) throw upstreamError(response.status, await this.readBody(response,'auth-discovery'), this.requestId(response),{stage:'auth-discovery'});
+      const value = await this.readJson(response,'auth-discovery','INVALID_DISCOVERY','OpenAI 身份服务发现信息不是有效 JSON。') as Discovery;
+      const endpoint = (url:unknown) => {try {return typeof url === 'string' && new URL(url).origin === ISSUER && new URL(url).protocol === 'https:';} catch {return false;}};
+      if (!value || value.issuer !== ISSUER || ![value.authorization_endpoint,value.token_endpoint,value.jwks_uri].every(endpoint) || (value.revocation_endpoint && !endpoint(value.revocation_endpoint))) {
+        throw new IntegrationError(502,'INVALID_DISCOVERY','OpenAI 身份服务发现信息未通过安全校验。',responseDiagnostics(response,'auth-discovery'));
       }
-      this.jwks = createRemoteJWKSet(new URL(value.jwks_uri), {[customFetch]:this.network});
+      this.jwks = createRemoteJWKSet(new URL(value.jwks_uri), {[customFetch]:async (url,options) => {
+        const response = await this.request(String(url),options,'oauth-jwks');
+        if(!response.ok) throw upstreamError(response.status,await this.readBody(response,'oauth-jwks'),this.requestId(response),{stage:'oauth-jwks'});
+        return response;
+      }});
       return value;
     })().catch(error => { this.discoveryPromise = undefined; throw error; });
   }
   private requestId(response:Response) { return response.headers.get('openai-request-id') || response.headers.get('x-request-id') || undefined; }
-  private async readBody(response:Response):Promise<unknown> { try { return await response.json(); } catch { return {}; } }
-  private async request(url:string,init:RequestInit = {}) {
+  private async readBody(response:Response,stage:string):Promise<unknown> {
+    let text:string;
+    try {text = await response.text();}
+    catch(error) {throw new IntegrationError(502,'OPENAI_RESPONSE_INTERRUPTED','读取 OpenAI 身份服务错误响应时连接中断。',{...responseDiagnostics(response,stage),...networkDiagnostics(error,stage)});}
+    try {return JSON.parse(text);} catch {return {detail:safeDiagnosticText(text)};}
+  }
+  private async readJson(response:Response,stage:string,code:string,message:string):Promise<unknown> {
+    try {return await response.json();}
+    catch(error) {throw new IntegrationError(502,code,message,{...responseDiagnostics(response,stage),...(error instanceof SyntaxError ? {reason:'invalid_json'} : networkDiagnostics(error,stage))});}
+  }
+  private async request(url:string,init:RequestInit = {},stage = 'auth-request') {
     try { return await this.network(url,{...init,redirect:'error',signal:AbortSignal.timeout(30000)}); }
-    catch { throw new IntegrationError(503,'OPENAI_NETWORK_ERROR','无法连接 OpenAI 身份服务，请检查网络后重试。'); }
+    catch(error) { throw new IntegrationError(503,'OPENAI_NETWORK_ERROR','连接 OpenAI 身份服务失败，尚未收到 HTTP 响应。请查看网络错误详情。',networkDiagnostics(error,stage)); }
   }
 
   async start(options: {registrationId?:string;newAccount?:boolean;enablePlan?:boolean} = {}) {
@@ -212,13 +262,14 @@ export class AuthManager {
     const code = parameters.get('code');
     if (!code) throw this.remember(new IntegrationError(400,'OAUTH_CODE_MISSING','登录回调缺少授权码。'));
     if (pending.clientId === 'dynamic_agent_client') { this.store.unverifiedClientId = clientId; await this.save(); }
+    let exchangeResponse:Response|undefined;
     try {
       if (epoch !== this.generation) throw new IntegrationError(409,'AUTH_CHANGED','连接已更改，请重新开始登录。');
       const discovery = await this.discovery();
-      const response = await this.request(discovery.token_endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},
-        body:new URLSearchParams({grant_type:'authorization_code',client_id:clientId,code,code_verifier:pending.verifier,redirect_uri:pending.redirectUri,resource:RESOURCE})});
-      if (!response.ok) throw upstreamError(response.status,await this.readBody(response),this.requestId(response));
-      const parsed = TokensSchema.safeParse(await response.json());
+      const response = exchangeResponse = await this.request(discovery.token_endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},
+        body:new URLSearchParams({grant_type:'authorization_code',client_id:clientId,code,code_verifier:pending.verifier,redirect_uri:pending.redirectUri,resource:RESOURCE})},'oauth-token-exchange');
+      if (!response.ok) throw upstreamError(response.status,await this.readBody(response,'oauth-token-exchange'),this.requestId(response),{stage:'oauth-token-exchange'});
+      const parsed = TokensSchema.safeParse(await this.readJson(response,'oauth-token-exchange','OAUTH_TOKENS_INVALID','OpenAI 授权响应不是有效 JSON。'));
       if (!parsed.success || !parsed.data.id_token || typeof parsed.data.scope !== 'string') throw new IntegrationError(502,'OAUTH_TOKENS_INVALID','OpenAI 授权响应缺少身份令牌或授权范围。');
       const tokens = parsed.data;
       const identity = await this.verifyIdentity(tokens.id_token!,clientId,pending.nonce);
@@ -235,7 +286,11 @@ export class AuthManager {
       if (index >= 0) this.store.registrations[index] = registration; else this.store.registrations.push(registration);
       this.store.activeId = registration.id; delete this.store.unverifiedClientId; this.generation++; this.lastError = null; await this.save();
       return this.status();
-    } catch (error) { throw this.remember(error instanceof IntegrationError ? error : new IntegrationError(502,'OAUTH_VALIDATION_FAILED','OpenAI 登录身份或令牌响应未通过验证。')); }
+    } catch (error) {
+      const failure = error instanceof IntegrationError ? error : new IntegrationError(502,'OAUTH_VALIDATION_FAILED','OpenAI 登录身份或令牌响应未通过验证。',{stage:'oauth-token-exchange'});
+      if(exchangeResponse) Object.assign(failure.diagnostics,{...responseDiagnostics(exchangeResponse,'oauth-token-exchange'),...failure.diagnostics});
+      throw this.remember(failure);
+    }
   }
 
   private async verifyIdentity(token:string,clientId:string,nonce?:string):Promise<JWTPayload> {
@@ -244,7 +299,11 @@ export class AuthManager {
       const {payload} = await jwtVerify(token,this.jwks!,{issuer:ISSUER,audience:clientId,requiredClaims:['sub','exp','iat'],clockTolerance:5,currentDate:new Date(this.now()),algorithms:['RS256','ES256']});
       if (!payload.sub || (nonce !== undefined && payload.nonce !== nonce)) throw new Error('invalid identity');
       return payload;
-    } catch { throw new IntegrationError(400,'OAUTH_ID_TOKEN_INVALID','OpenAI 身份令牌签名、身份、有效期或 nonce 校验失败。'); }
+    } catch(error) {
+      if(error instanceof IntegrationError) throw error;
+      const reason = error && typeof error === 'object' ? safeDiagnosticText((error as {code?:unknown}).code,160) : undefined;
+      throw new IntegrationError(400,'OAUTH_ID_TOKEN_INVALID','OpenAI 身份令牌签名、身份、有效期或 nonce 校验失败。',{stage:'oauth-identity-validation',reason});
+    }
   }
   private refreshTime(value:number|string|undefined) {
     if (value === undefined) return undefined;
@@ -252,7 +311,7 @@ export class AuthManager {
     return Number.isFinite(numeric) ? numeric*1000 : Number.isFinite(Date.parse(String(value))) ? Date.parse(String(value)) : undefined;
   }
   private remember(error:IntegrationError) {
-    this.lastError = {code:error.code,message:error.publicMessage,status:error.status,requestId:error.diagnostics.requestId}; return error;
+    this.lastError = {code:error.code,message:error.publicMessage,status:error.status,...error.diagnostics}; return error;
   }
 
   async getAccessToken():Promise<string> {
@@ -265,6 +324,7 @@ export class AuthManager {
   }
   private async refresh():Promise<string> {
     const release = await this.lock();
+    let refreshResponse:Response|undefined;
     try {
       // Reload after acquiring an interprocess lock: another process may have rotated the token.
       this.store = StoreSchema.parse(JSON.parse(await readFile(this.path,'utf8')));
@@ -273,16 +333,16 @@ export class AuthManager {
       if ((active.expiresAt || 0) > this.now()+60000) return active.accessToken;
       if (!active.refreshToken) throw new IntegrationError(401,'CHATGPT_REAUTHORIZE','ChatGPT 凭据已到期且无法续期，请重新登录授权。');
       const discovery = await this.discovery();
-      const response = await this.request(discovery.token_endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},
-        body:new URLSearchParams({grant_type:'refresh_token',client_id:active.clientId,refresh_token:active.refreshToken,resource:RESOURCE})});
+      const response = refreshResponse = await this.request(discovery.token_endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},
+        body:new URLSearchParams({grant_type:'refresh_token',client_id:active.clientId,refresh_token:active.refreshToken,resource:RESOURCE})},'oauth-token-refresh');
       if (!response.ok) {
-        const error = upstreamError(response.status,await this.readBody(response),this.requestId(response));
+        const error = upstreamError(response.status,await this.readBody(response,'oauth-token-refresh'),this.requestId(response),{stage:'oauth-token-refresh'});
         if (['invalid_grant','invalid_refresh_token','token_expired','refresh_token_expired','refresh_token_invalidated','refresh_token_reused'].includes(error.code)) {
           this.clearTokens(active); await this.save();
         }
         throw this.remember(error);
       }
-      const tokens = TokensSchema.safeParse(await response.json());
+      const tokens = TokensSchema.safeParse(await this.readJson(response,'oauth-token-refresh','REFRESH_RESPONSE_INVALID','ChatGPT 续期响应不是有效 JSON，原凭据已保留。'));
       if (!tokens.success || !tokens.data.refresh_token) throw new IntegrationError(502,'REFRESH_RESPONSE_INVALID','ChatGPT 续期响应缺少轮换凭据，原凭据已保留。');
       if (epoch !== this.generation) throw new IntegrationError(409,'AUTH_CHANGED','连接已更改，请重新发起操作。');
       if (tokens.data.id_token) {
@@ -296,6 +356,12 @@ export class AuthManager {
       await this.save();
       if (!this.status().planAuthorized) throw new IntegrationError(403,'CHATGPT_PLAN_NOT_AUTHORIZED','续期后的授权不包含 ChatGPT 套餐权限，请重新授权。');
       return active.accessToken;
+    } catch(error) {
+      if(error instanceof IntegrationError) {
+        if(refreshResponse) Object.assign(error.diagnostics,{...responseDiagnostics(refreshResponse,'oauth-token-refresh'),...error.diagnostics});
+        throw this.remember(error);
+      }
+      throw error;
     } finally { await release(); }
   }
   private async lock():Promise<() => Promise<void>> {
@@ -337,7 +403,7 @@ export class AuthManager {
           if (discovery.revocation_endpoint) {
             for (let attempt=0;attempt<2;attempt++) {
               const response = await this.request(discovery.revocation_endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-                body:new URLSearchParams({token:active.refreshToken,token_type_hint:'refresh_token',client_id:active.clientId})});
+                body:new URLSearchParams({token:active.refreshToken,token_type_hint:'refresh_token',client_id:active.clientId})},'oauth-revocation');
               if (response.status === 200) { remoteRevoked = true; break; }
               if (response.status < 500) break;
               if (attempt===0) await new Promise(resolve => setTimeout(resolve,300));
