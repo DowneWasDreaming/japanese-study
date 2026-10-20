@@ -9,6 +9,7 @@ import { LearningService } from './learning.js';
 import { createLearningRouter } from './learning-router.js';
 import { RequestCounter } from './quota.js';
 import { FailureDiagnostics } from './diagnostics.js';
+import { TokenUsageService } from './token-usage.js';
 import { localBoundary, errorHandler } from './security.js';
 import type { getConfig } from './config.js';
 
@@ -22,6 +23,7 @@ export function createApplication(config: ReturnType<typeof getConfig>, db: Data
   app.use(express.json({ limit: '15mb' }));
   const limiter = new RequestCounter(db, model);
   const diagnostics = new FailureDiagnostics(db);
+  const tokenUsage = new TokenUsageService(db);
   const provider = { async generate(messages: Parameters<ModelService['generate']>[0], selected?: string) {
     if (!auth.status().planAuthorized) throw Object.assign(new Error('请先连接 ChatGPT 并授权使用套餐。'), { code: 'PLAN_PERMISSION_REQUIRED', status: 403 });
     try { return await limiter.generate(messages, selected); }
@@ -56,6 +58,7 @@ export function createApplication(config: ReturnType<typeof getConfig>, db: Data
     }
   });
   app.get('/api/models', async (_req, res) => res.json(await model.listModels()));
+  app.get('/api/token-usage', (req, res) => res.json(tokenUsage.list(req.query)));
   app.put('/api/models', async (req, res) => {
     const { model: selection } = z.object({ model: z.string().min(1).max(200) }).parse(req.body);
     await model.setModel(selection); res.json({ selected: model.selectedModel });
@@ -96,5 +99,5 @@ export function createApplication(config: ReturnType<typeof getConfig>, db: Data
     next(error);
   }) as express.ErrorRequestHandler);
   app.use(errorHandler);
-  return { app, learning, limiter };
+  return { app, learning, limiter, tokenUsage };
 }

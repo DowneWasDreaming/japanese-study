@@ -18,7 +18,9 @@ h1, h2, h3, h4, p { margin: 0; }
 button svg, a svg { flex-shrink: 0; }
 svg { vertical-align: middle; flex-shrink: 0; }
 .app-shell { display: flex; min-height: 100vh; }
-.sidebar { position: fixed; width: 226px; height: 100vh; background: var(--sidebar); border-right: 1px solid var(--line); padding: 37px 23px 20px; z-index: 30; display: flex; flex-direction: column; }
+.sidebar { position: fixed; inset: 0 auto auto 0; width: 226px; height: 100vh; height: 100dvh; background: var(--sidebar); border-right: 1px solid var(--line); padding: 37px 23px 20px; z-index: 30; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; overscroll-behavior-y: contain; scroll-padding-block: 16px; }
+.sidebar > *, .sidebar .nav-link { flex-shrink: 0; }
+.sidebar a, .sidebar button { scroll-margin-block: 16px; }
 .brand { display: flex; align-items: center; gap: 12px; padding: 0 10px; }
 .brand-mark { width: 41px; height: 43px; border: 1px solid #8d987f; display: flex; align-items: center; justify-content: center; border-radius: 3px; color: var(--green); font: 26px "Yu Mincho", "Noto Serif CJK JP", "SimSun", serif; }
 .brand strong { display: block; font-family: "Yu Mincho", "SimSun", serif; font-size: 22px; letter-spacing: 3px; font-weight: 600; }
@@ -653,3 +655,53 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--green); }
 @media (max-width: 720px) { .discussion-toggle { padding: 13px; gap: 9px; } .discussion-toggle strong { font-size: 11px; } .discussion-toggle small { font-size: 9px; } .discussion-body { padding: 14px; } .discussion-context { font-size: 10px; } .discussion-turn-meta { padding: 9px 11px; gap: 7px; } .discussion-question, .discussion-answer { padding: 12px; } .discussion-question, .discussion-answer .prose-text { font-size: 11px; } .discussion-status { padding: 12px; align-items: flex-start; } .discussion-status > .button { margin-left: 0; } .discussion-failure, .discussion-error { padding: 12px; } .discussion-send { align-items: flex-end; } .discussion-send .button { max-width: 100%; font-size: 10px; gap: 5px; padding: 10px 12px; } }
 @media (max-width: 950px) { .diagnostics-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } .diagnostics-scope { grid-column: 1 / -1; } }
 @media (max-width: 720px) { .exam-diagnostics-entry { margin: -11px 0 15px; justify-content: flex-start; } .diagnostic-card { padding: 20px; } .diagnostic-card-meta time { margin-left: 0; width: 100%; margin-top: 4px; } .diagnostic-card h2 { font-size: 13px; } .diagnostics-filters { gap: 17px 12px; } .diagnostic-facts { grid-template-columns: 1fr; padding: 14px; gap: 13px; } .diagnostic-card-actions { gap: 12px; } .diagnostics-intro p { font-size: 10px; } .diagnostics-total { flex-wrap: wrap; gap: 7px; } .diagnostics-official .text-button { display: flex; margin-left: 0; margin-top: 7px; } }
+
+/* Keep every navigation item reachable when browser zoom reduces viewport height. */
+@media (max-height: 790px) { .sidebar-note { display: none; } }
+@media (max-height: 600px) { .sidebar { padding-top: 21px; padding-bottom: 18px; } .sidebar-caption { padding-top: 16px; padding-bottom: 19px; } .sidebar-bottom { padding-top: 19px; } }
+
+.token-settings-card > p { font-size: 12px; line-height: 2; color: var(--muted); }
+.token-settings-card > .button { margin: 18px 0 15px; }
+.token-intro { align-items: flex-start; margin-bottom: 20px; }
+.token-intro strong { font-size: 12px; color: var(--green); }
+.token-intro p { font-size: 11px; line-height: 2; margin-top: 7px; }
+.token-period-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin: 20px 0 17px; }
+.token-period-bar > span { font-size: 10px; color: var(--muted); line-height: 1.9; }
+.token-summary { min-width: 0; }
+.token-summary .section-heading > svg { color: var(--green); }
+.token-summary .section-heading p { font-size: 10px; }
+.token-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 15px; margin: 0; }
+.token-metrics > div { min-width: 0; padding: 18px; background: var(--soft); border: 1px solid transparent; border-radius: 5px; }
+.token-metrics dt { font-size: 11px; line-height: 1.8; color: var(--muted); }
+.token-metrics dd { font-size: 27px; font-family: Georgia, "Yu Mincho", serif; font-variant-numeric: tabular-nums; color: var(--ink); margin: 11px 0 0; line-height: 1.4; overflow-wrap: anywhere; }
+.token-metrics .token-total { border-color: var(--line); background: var(--green-soft); }
+.token-metrics .token-total dd { color: var(--green); }
+.token-metrics .token-subset { display: flex; flex-wrap: wrap; gap: 6px 15px; align-items: baseline; padding: 9px 0; background: none; }
+.token-metrics .token-subset dd { font-size: 15px; margin: 0; }
+.token-coverage { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; border-top: 1px solid var(--line); padding-top: 17px; margin-top: 7px; font-size: 10px; color: var(--muted); line-height: 1.9; }
+.token-coverage strong { font-weight: 500; color: var(--ink); }
+.token-subset-note { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 16px; }
+.token-records-heading { display: flex; justify-content: space-between; align-items: end; flex-wrap: wrap; gap: 10px; margin: 27px 0 16px; }
+.token-records-heading h2 { font-size: 15px; font-weight: 500; }
+.token-records-heading p, .token-records-heading > span { font-size: 10px; line-height: 1.9; color: var(--muted); }
+.token-records-heading p { margin-top: 7px; }
+.token-records { display: grid; gap: 16px; }
+.token-record { min-width: 0; }
+.token-record-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.token-record-meta time { margin-left: auto; display: inline-flex; gap: 5px; align-items: center; font-size: 10px; color: var(--muted); }
+.token-record-meta .token-failed { color: var(--red); }
+.token-record h3 { font-size: 13px; font-weight: 500; line-height: 1.8; margin: 16px 0 13px; overflow-wrap: anywhere; }
+.token-metrics.compact { gap: 8px 16px; }
+.token-metrics.compact > div { padding: 0; border: 0; background: none; }
+.token-metrics.compact dd { font-size: 20px; margin-top: 4px; }
+.token-metrics.compact .token-subset dd { font-size: 13px; margin-top: 0; }
+.token-metrics.compact dt { font-size: 10px; }
+.token-record-details { border-top: 1px solid var(--line); margin-top: 14px; }
+.token-record-details summary { color: var(--green); cursor: pointer; padding-top: 12px; font-size: 10px; line-height: 1.9; }
+.token-record-details dl { display: grid; gap: 12px; margin: 12px 0 0; padding: 13px; background: var(--soft); border-radius: 4px; }
+.token-record-details dt { font-size: 10px; color: var(--muted); margin-bottom: 5px; }
+.token-record-details dd { font-size: 10px; font-family: Consolas, "SFMono-Regular", monospace; margin: 0; overflow-wrap: anywhere; line-height: 1.9; }
+.token-record > .text-button { margin-top: 13px; }
+.token-started { border-top: 1px solid var(--line); padding-top: 17px; }
+@media (max-width: 950px) { .token-metrics { gap: 12px; } .token-metrics > div { padding: 15px 13px; } .token-metrics dd { font-size: 23px; } }
+@media (max-width: 720px) { .token-page-heading { flex-wrap: wrap; gap: 14px; } .token-page-heading > .button { margin-left: auto; } .token-intro p { font-size: 10px; } .token-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; } .token-metrics > .token-total { grid-column: 1 / -1; } .token-metrics .token-subset { gap: 2px 8px; padding-block: 2px; } .token-metrics dt { font-size: 10px; } .token-coverage { gap: 5px 15px; } .token-coverage strong { width: 100%; } .token-record-meta time { margin-left: 0; width: 100%; margin-top: 4px; } .token-metrics.compact { gap: 13px; } .token-metrics.compact > .token-total { grid-column: auto; } .token-records-heading > span { display: none; } }

@@ -7,6 +7,7 @@ import { seedDatabase } from './seed.js';
 import { AuthManager } from './auth.js';
 import { ModelService } from './model.js';
 import { createApplication } from './app.js';
+import { TokenUsageService } from './token-usage.js';
 
 const config = getConfig();
 const db = openDatabase(config.dbPath);
@@ -18,7 +19,8 @@ catch (error) {
   authInitFailure = error;
   console.warn(`ChatGPT 连接暂不可用（${(error as { code?: string }).code || 'AUTH_INIT_FAILED'}），基础学习仍可使用。请在设置中查看错误。`);
 }
-const model = new ModelService(auth, { settingsFile: resolve(config.credentialDir, 'model-settings.json') });
+const tokenUsage = new TokenUsageService(db);
+const model = new ModelService(auth, { settingsFile: resolve(config.credentialDir, 'model-settings.json'), onUsage: event => { tokenUsage.record(event); } });
 const desktopInstance = process.argv.find(arg => arg.startsWith('--desktop-instance='))?.split('=')[1];
 const desktopToken = process.env.STUDY_DESKTOP_TOKEN;
 delete process.env.STUDY_DESKTOP_TOKEN;

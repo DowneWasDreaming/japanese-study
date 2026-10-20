@@ -8,7 +8,7 @@ export function openDatabase(path: string = resolve('data', 'learning.sqlite')):
   const db = new DatabaseSync(path);
   db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;');
   db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
-  for (const [version, filename] of [[1, '001.sql'], [2, '002.sql'], [3, '003.sql'], [4, '004.sql']] as const) {
+  for (const [version, filename] of [[1, '001.sql'], [2, '002.sql'], [3, '003.sql'], [4, '004.sql'], [5, '005.sql']] as const) {
     if (db.prepare('SELECT version FROM schema_migrations WHERE version=?').get(version)) continue;
     const migration = readFileSync(fileURLToPath(new URL(`../migrations/${filename}`, import.meta.url)), 'utf8');
     transaction(db, () => {

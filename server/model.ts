@@ -3,10 +3,11 @@ import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { AuthManager, IntegrationError, upstreamError, networkDiagnostics, responseDiagnostics, safeDiagnosticText, type IntegrationDiagnostics } from './auth.ts';
+import { parseReportedTokenUsage,type TokenUsageEvent } from './token-usage.js';
 
 export type ModelMessage = {role:'user'|'assistant'|'developer';content:string};
 export type ModelChoice = {id:string;name:string};
-export type ModelOptions = {settingsFile?:string;fetch?:typeof fetch};
+export type ModelOptions = {settingsFile?:string;fetch?:typeof fetch;onUsage?:(event:TokenUsageEvent)=>void|Promise<void>};
 const CatalogSchema = z.object({models:z.array(z.object({slug:z.string().min(1),display_name:z.string().min(1),visibility:z.string()}))});
 const MessageSchema = z.array(z.object({role:z.enum(['developer','user','assistant']),content:z.string().min(1).max(100000)}).strict()).min(1).max(100);
 
@@ -21,8 +22,10 @@ export class ModelService {
   private settings:Record<string,string> = {};
   private blockedAccount:string|null = null;
   private blockedError:IntegrationError|null = null;
+  private readonly onUsage:ModelOptions['onUsage'];
   constructor(private readonly auth:AuthManager,options:ModelOptions = {}) {
     this.network = options.fetch || fetch; this.settingsFile = options.settingsFile || join(auth.credentialDir,'model-selection.json');
+    this.onUsage = options.onUsage;
   }
   get selectedModel() { return this.selected; }
   /** A new explicit user retry may probe the upstream quota again. */
@@ -79,11 +82,14 @@ export class ModelService {
     const selected = model || this.selected;
     if (!selected || !this.choices.some(x => x.id === selected)) throw new IntegrationError(400,'MODEL_UNAVAILABLE','没有选择当前账号可用的模型，请在设置中刷新并选择模型。');
     if (account !== this.auth.accountKey()) throw new IntegrationError(409,'AUTH_CHANGED','ChatGPT 账号已切换，请重新发起操作。');
+    const attemptId = randomUUID(); const occurredAt = new Date().toISOString();
+    let responseId:string|undefined;
+    let usage = parseReportedTokenUsage(undefined); let succeeded = false;
+    try {
     // Only documented plan-usage fields are sent. History is included explicitly.
     const response = await this.request('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json',Accept:'text/event-stream'},
       body:JSON.stringify({model:selected,input,store:false,stream:true})},180000,'model-request',selected);
     if (!response.ok) throw await this.responseError(response,'model-request',selected);
-    let responseId:string|undefined;
     const metadata = ():IntegrationDiagnostics => ({...responseDiagnostics(response,'model-stream'),responseId,model:selected});
     const failure = (status:number,code:string,message:string,extra:IntegrationDiagnostics = {}) => new IntegrationError(status,code,message,{...metadata(),...extra});
     const mediaType = response.headers.get('content-type')?.split(';',1)[0].trim().toLowerCase();
@@ -117,6 +123,9 @@ export class ModelService {
       const eventResponseId = responseData?.id || event.response_id;
       if(typeof eventResponseId === 'string') responseId = safeDiagnosticText(eventResponseId,200);
       const eventType = event.type;
+      if (eventType === 'response.completed' || eventType === 'response.failed' || eventType === 'response.incomplete' || eventType === 'error') {
+        usage = parseReportedTokenUsage(responseData?.usage ?? event.usage);
+      }
       if (eventType === 'response.output_text.delta') {
         if (typeof event.delta !== 'string') throw failure(502,'MODEL_STREAM_INVALID','模型文本片段格式无效。');
         accumulated += event.delta;
@@ -195,11 +204,19 @@ export class ModelService {
         }
       }
       if (account !== this.auth.accountKey() || !this.auth.status().planAuthorized) throw failure(409,'AUTH_CHANGED','ChatGPT 连接在请求期间已更改，结果未保存为完成。');
+      succeeded = true;
       return result!;
     } catch(error) {
       if (error instanceof IntegrationError) throw error;
       throw failure(502,'MODEL_STREAM_INTERRUPTED','读取 OpenAI 模型事件流时连接中断，未完成的内容不会保存为成功结果。',networkDiagnostics(error,'model-stream-read'));
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+    } finally {
+      // Counts are optional telemetry. A broken observer cannot alter inference.
+      try {
+        const pending = this.onUsage?.({id:attemptId,occurredAt,model:selected,responseId:responseId || null,status:succeeded ? 'completed' : 'failed',...usage});
+        if (pending) void Promise.resolve(pending).catch(() => {});
+      } catch { /* Preserve the model result or original failure. */ }
+    }
   }
   private async request(url:string,init:RequestInit,timeout:number,stage:string,model?:string) {
     try {return await this.network(url,{...init,redirect:'error',signal:AbortSignal.timeout(timeout)});}
