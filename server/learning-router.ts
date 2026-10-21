@@ -12,6 +12,39 @@ export function createLearningRouter(service:LearningService, db:DatabaseSync, a
   const busy=()=>service.isBusy()||additionalBusy();
   const data=new DataManagementService(db,{isBusy:busy,backup:()=>service.createDeletionBackup()});
   router.get('/diagnostics',(req,res)=>res.json(service.diagnostics.list(req.query)));
+  router.get('/review/points',(req,res)=>res.json(service.reviews.list(req.query)));
+  router.get('/review/points/:pointId',(req,res)=>res.json({item:service.reviews.get(String(req.params.pointId))}));
+  router.post('/review/points',(req,res)=>{
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再保存重点复习。','REVIEW_BUSY',409);
+    res.json(service.reviews.add(req.body));
+  });
+  router.post('/review/points/:pointId/normalize',async(req,res)=>{
+    z.object({}).strict().parse(req.body);
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再整理知识点。','REVIEW_BUSY',409);
+    res.json(await service.reviews.normalize(String(req.params.pointId)));
+  });
+  router.post('/review/points/:pointId/confirm',(req,res)=>{
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再确认知识点。','REVIEW_BUSY',409);
+    res.json(service.reviews.confirm(String(req.params.pointId),req.body));
+  });
+  router.put('/review/points/:pointId',(req,res)=>{
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再修改知识点。','REVIEW_BUSY',409);
+    res.json(service.reviews.update(String(req.params.pointId),req.body));
+  });
+  router.post('/review/points/:pointId/rate',(req,res)=>{
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再记录复习反馈。','REVIEW_BUSY',409);
+    res.json(service.reviews.rate(String(req.params.pointId),req.body));
+  });
+  router.delete('/review/points/:pointId',(req,res)=>{
+    if(busy())throw new LearningError('有学习请求正在进行，请完成后再删除知识点。','REVIEW_BUSY',409);
+    const pointId=String(req.params.pointId);service.reviews.get(pointId);
+    const beforeDeleteBackup=service.createDeletionBackup();
+    res.json({...service.reviews.remove(pointId),beforeDeleteBackup});
+  });
+  router.post('/review/exams',async(req,res)=>{
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再生成复习卷。','REVIEW_BUSY',409);
+    res.json(await service.createReviewExam(req.body));
+  });
   router.get('/dashboard',(_req,res)=>res.json(service.dashboard()));
   router.get('/knowledge',(req,res)=>res.json(knowledgePoints(db,{level:queryString(req,'level'),q:queryString(req,'q')})));
   router.get('/data/summary',(_req,res)=>res.json(data.summary()));

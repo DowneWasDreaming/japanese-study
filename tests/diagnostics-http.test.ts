@@ -53,6 +53,6 @@ test('HTTP retries preserve distinct failure details after success and ignore fo
   const filtered=await call(`/diagnostics?examId=${id}&category=network&pageSize=1`);assert.equal(filtered.data.total,1);
   assert.equal((await call('/diagnostics?page=-1')).status,400);
   const runtime=(await call('/runtime')).data;assert.equal(runtime.localRequests.limitEnabled,false);assert.equal(runtime.localRequests.hour,3);assert.equal(runtime.localRequests.hourlyLimit,null);
-  const backup=validateBackup((await call('/backup')).data);assert.equal(backup.version,4);assert.equal(backup.tables.ai_failures.length,2);
+  const backup=validateBackup((await call('/backup')).data);assert.equal(backup.version,5);assert.equal(backup.tables.ai_failures.length,2);
   assert.equal((await call(`/exams/${id}`)).data.score,10);
 });

@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { ArrowLeft, ArrowRight, Check, CircleHelp, Clipboard, Clock3, ExternalLink, History, LoaderCircle, RefreshCw, ShieldCheck } from 'lucide-react';
 
-type Operation = 'generate' | 'grade' | 'annotation' | 'explain' | 'followup' | 'models' | 'connection' | 'auth';
+type Operation = 'generate' | 'grade' | 'annotation' | 'review' | 'explain' | 'followup' | 'models' | 'connection' | 'auth';
 type Category = 'network' | 'upstream' | 'validation' | 'permission' | 'quota' | 'interrupted' | 'local';
 export type AIDiagnostic = {
   id: string; createdAt: string; operation: Operation; category: Category; code: string; message: string;
@@ -10,7 +10,7 @@ export type AIDiagnostic = {
   source: 'live' | 'legacy' | 'recovery'; stage: string | null; networkCode: string | null; responseId: string | null; reason?: string | null;
 };
 type DiagnosticList = { items: AIDiagnostic[]; total: number; page: number; pageSize: number };
-const operationNames: Record<Operation, string> = { generate: 'AI 出题', grade: 'AI 评分', annotation: '标记词句解析', explain: '词句与语法讲解', followup: 'AI 问答与追问', models: '获取模型', connection: '验证连接', auth: '账号授权' };
+const operationNames: Record<Operation, string> = { generate: 'AI 出题', grade: 'AI 评分', annotation: '标记词句解析', review: '复习知识点整理', explain: '词句与语法讲解', followup: 'AI 问答与追问', models: '获取模型', connection: '验证连接', auth: '账号授权' };
 const categoryNames: Record<Category, string> = { network: '网络连接', upstream: 'GPT 返回错误', validation: '结果校验', permission: '授权与权限', quota: '额度与限制', interrupted: '请求中断', local: '本地服务' };
 const categoryDescriptions: Record<Category, string> = {
   network: '连接、传输或超时没有完成。查看网络错误码与阶段，确认是连接问题还是接收响应时中断。',

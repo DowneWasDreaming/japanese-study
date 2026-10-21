@@ -142,10 +142,10 @@ test('v4 discussion backups round-trip, v1/v2/v3 imports initialize empty discus
   const { service, db, id, ask, reply, submit, list } = await setup(t);
   const queued = (await ask('我想问这个表达的语气。')).json.items[0];
   await submit(); await reply(queued.id);
-  const backup = service.backup(); assert.equal(backup.version, 4); assert.equal(backup.tables.exam_qa_turns.length, 1); assert.equal(validateBackup(backup).tables.exam_qa_turns.length, 1);
+  const backup = service.backup(); assert.equal(backup.version, 5); assert.equal(backup.tables.exam_qa_turns.length, 1); assert.equal(validateBackup(backup).tables.exam_qa_turns.length, 1);
   const saved = (await list()).json.items[0];
   for (const version of [1, 2, 3]) {
-    const legacy = structuredClone(backup) as any; legacy.version = version; delete legacy.tables.exam_qa_turns;
+    const legacy = structuredClone(backup) as any; legacy.version = version; delete legacy.tables.exam_qa_turns; delete legacy.tables.review_points; delete legacy.tables.review_sources; delete legacy.tables.review_events;
     if (version < 3) delete legacy.tables.ai_failures;
     if (version < 2) delete legacy.tables.exam_annotations;
     assert.deepEqual(validateBackup(legacy).tables.exam_qa_turns, []);

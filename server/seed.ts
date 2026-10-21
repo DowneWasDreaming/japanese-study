@@ -6,6 +6,7 @@ export type QuestionType = typeof questionTypes[number];
 export interface Question {
   id: string; type: QuestionType; level: string; category: string; prompt: string;
   originId?: string;
+  reviewPointIds?: string[];
   passage?: string; options?: { id: string; text: string }[]; answer: string;
   acceptedAnswers: string[]; explanation: string; knowledgePoints: string[];
   points: number; rubric: string; source?: string;

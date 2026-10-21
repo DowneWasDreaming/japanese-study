@@ -54,7 +54,7 @@ test('HTTP token totals collect actual stream metadata across partial grading an
   assert.equal((await call(`/exams/${id}`)).data.score,30);
   assert.equal((await call('/token-usage?period=all')).data.summary.requests,4,'GET does not infer or charge');assert.equal(calls,4);
   for(const query of ['period=invalid','page=0','page=bad','unknown=value','period=day&period=all'])assert.equal((await call('/token-usage?'+query)).status,400);
-  const backup=validateBackup((await call('/backup')).data);assert.equal(backup.version,4);
+  const backup=validateBackup((await call('/backup')).data);assert.equal(backup.version,5);
   assert.ok(!Object.hasOwn(backup.tables,'ai_token_usage'));assert.ok(!Object.hasOwn(backup.tables,'ai_token_usage_metadata'));
   const preview=await call('/data/delete-preview',{scope:'all'});assert.equal(preview.status,200);
   assert.equal((await call('/data',{token:preview.data.token,confirmation:'删除'},'DELETE')).status,200);

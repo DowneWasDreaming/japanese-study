@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
-export const failureOperations=['generate','grade','annotation','explain','followup','models','connection','auth'] as const;
+export const failureOperations=['generate','grade','annotation','review','explain','followup','models','connection','auth'] as const;
 export const failureCategories=['network','upstream','validation','permission','quota','interrupted','local'] as const;
 type Operation=typeof failureOperations[number];
 type Category=typeof failureCategories[number];
