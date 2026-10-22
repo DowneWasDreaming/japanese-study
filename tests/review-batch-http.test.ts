@@ -57,7 +57,7 @@ async function setup(t: TestContext, reply: Reply = payload => JSON.stringify(ca
   return { db, service, requests, origin, call, add, get, overview, start, finished, hold, setExtraBusy: (busy: boolean) => { extraBusy = busy; } };
 }
 
-test('one HTTP action normalizes all twenty-six drafts across levels and pages without confirming or advancing knowledge', { timeout: 15_000 }, async t => {
+test('one HTTP action normalizes and schedules all twenty-six drafts across levels and pages without manual confirmation', { timeout: 15_000 }, async t => {
   const { db, requests, call, add, get, overview, start, finished } = await setup(t);
   const points = Array.from({ length: 26 }, (_, index) => add('学習語' + index, index % 2 ? 'N3' : 'N5'));
   assert.equal((await call('/review/points?status=draft&pageSize=10&level=N5')).json.items.length, 10);
@@ -66,23 +66,47 @@ test('one HTTP action normalizes all twenty-six drafts across levels and pages w
   const job = await finished(); assert.equal(job.status, 'completed'); assert.equal(job.total, 26); assert.equal(job.processed, 26); assert.equal(job.succeeded, 26); assert.equal(job.failed, 0); assert.equal(job.current, null);
   assert.equal(requests.length, 26); assert.deepEqual(new Set(requests.map(item => item.selectedText)), new Set(points.map(point => point.title)));
   assert.ok(job.items.every((item: any) => item.status === 'completed')); assert.equal((await overview()).eligibleCount, 0);
-  for (const point of points) { const saved = await get(point.id); assert.equal(saved.status, 'draft'); assert.equal(saved.normalizationStatus, 'completed'); assert.equal(saved.candidate.title, point.title); assert.equal(saved.stage, 0); assert.equal(saved.dueAt, null); }
+  for (const point of points) { const saved = await get(point.id); assert.equal(saved.status, 'active'); assert.equal(saved.normalizationStatus, 'none'); assert.equal(saved.candidate, null); assert.equal(saved.title, point.title); assert.equal(saved.stage, 0); assert.ok(saved.dueAt); assert.equal(saved.repetitions,0); }
+  assert.equal((await overview()).totalDraftCount,0);assert.equal((await call('/review/points?status=due&pageSize=100')).json.total,26);
   assert.equal(Number(db.prepare('SELECT COUNT(*) AS n FROM review_events').get()!.n), 0);
   const repeat = await start(); assert.equal(repeat.status, 400); assert.equal(repeat.json.error.code, 'NO_REVIEW_NORMALIZATION_PENDING'); assert.equal(requests.length, 26);
 });
 
-test('batch HTTP skips completed candidates and unsubmitted source exams while retaining their exact original records', async t => {
+test('batch HTTP automatically adds cached legacy candidates and skips unsubmitted sources while preserving mastered merge targets', async t => {
   const { db, service, requests, call, add, get, overview, start, finished } = await setup(t);
-  const cached = add('整理済み'); await call('/review/points/' + cached.id + '/normalize', {});
-  const ready = add('確認済み'); service.reviews.confirm(ready.id, candidate('確認済み'));
+  const cached = add('整理済み');db.prepare("UPDATE review_points SET normalization_status='completed',candidate_json=? WHERE id=?").run(JSON.stringify(candidate('確認済み')),cached.id);
+  const ready = add('確認済み','N3'); service.reviews.confirm(ready.id, candidate('確認済み'));service.reviews.rate(ready.id,{rating:'mastered',requestId:randomUUID()});
   const question: Question = { id: randomUUID(), level: 'N5', category: 'grammar', type: 'fill', prompt: '宿題が済んでから出かける。', answer: '済んで', acceptedAnswers: ['済んで'], explanation: '済む的て形。', knowledgePoints: ['済む'], points: 10, rubric: '按参考答案。', source: 'builtin' };
   const examId = randomUUID(); db.prepare('INSERT INTO exams(id,title,level,category,mode,source,status,created_at,questions_json,config_json) VALUES(?,?,?,?,?,?,?,?,?,?)').run(examId, '尚未交卷', 'N5', 'grammar', 'exam', 'builtin', 'draft', new Date().toISOString(), JSON.stringify([question]), JSON.stringify({ level: 'N5', count: 1, types: ['fill'], mode: 'exam', source: 'builtin', basis: 'all', gradingMode: 'mixed' }));
   const offset = question.prompt.indexOf('済んで'); const blocked = service.reviews.add({ examId, questionId: question.id, source: 'prompt', start: offset, end: offset + 3, text: '済んで' }).item;
-  const fresh = add('未整理'); const cachedBefore = await get(cached.id), blockedBefore = await get(blocked.id);
-  const before = await overview(); assert.equal(before.totalDraftCount, 3); assert.equal(before.eligibleCount, 1); assert.equal(before.completedCount, 1); assert.equal(before.blockedCount, 1);
-  await start(); const job = await finished(); assert.equal(job.total, 1); assert.equal(job.items[0].id, fresh.id); assert.equal(requests.length, 2);
-  assert.deepEqual(await get(cached.id), cachedBefore); assert.deepEqual(await get(blocked.id), blockedBefore); assert.equal((await get(ready.id)).status, 'active');
-  assert.equal((await get(fresh.id)).status, 'draft'); assert.equal((await overview()).completedCount, 2); assert.equal((await overview()).blockedCount, 1);
+  const fresh = add('未整理'); const readyBefore = await get(ready.id), blockedBefore = await get(blocked.id);
+  const before = await overview(); assert.equal(before.totalDraftCount, 3); assert.equal(before.eligibleCount, 2); assert.equal(before.completedCount, 1); assert.equal(before.blockedCount, 1);
+  await start(); const job = await finished(); assert.equal(job.total, 2); assert.deepEqual(new Set(job.items.map((item:any)=>item.id)),new Set([cached.id,fresh.id])); assert.equal(requests.length, 1,'legacy candidate is added without repeating AI');
+  assert.deepEqual(await get(blocked.id), blockedBefore);const merged=await get(ready.id);assert.equal(merged.status,'mastered');assert.equal(merged.level,'N3');assert.equal(merged.stage,7);assert.equal(merged.repetitions,readyBefore.repetitions);assert.equal(merged.lastReviewedAt,readyBefore.lastReviewedAt);assert.ok(merged.sources.some((source:any)=>source.text==='整理済み'));
+  assert.equal((await call('/review/points/'+cached.id)).status,404);assert.equal((await get(fresh.id)).status, 'active'); assert.equal((await overview()).completedCount, 0); assert.equal((await overview()).blockedCount, 1);
+});
+
+test('cached-only HTTP activation adds saved suggestions without AI, grades or token changes and leaves fresh and failed marks untouched',async t=>{
+  const {db,requests,call,add,get,finished}=await setup(t,()=>{throw new Error('cached-only activation must never request AI');});
+  const cached=add('済んで');db.prepare("UPDATE review_points SET normalization_status='completed',candidate_json=? WHERE id=?").run(JSON.stringify(candidate('済む')),cached.id);
+  const fresh=add('未整理'),failed=add('前回失敗');db.prepare("UPDATE review_points SET normalization_status='failed',error='以前のモデル接続失敗' WHERE id=?").run(failed.id);
+  const paper=await call('/exams',{level:'N5',count:1,types:['fill'],mode:'practice',source:'builtin',basis:'all'});assert.equal(paper.status,200);
+  const exam=(await call('/exams/'+paper.json.id)).json;await call('/exams/'+exam.id+'/answers',{answers:{[exam.questions[0].id]:exam.questions[0].answer}},'PUT');assert.equal((await call('/exams/'+exam.id+'/submit',{})).status,200);
+  db.prepare("INSERT INTO ai_token_usage(id,created_at,model,status,usage_state,input_tokens,output_tokens,total_tokens) VALUES(?,?,?,'completed','reported',12,7,19)").run(randomUUID(),new Date().toISOString(),'synthetic-cached-activation');
+  const preserved=()=>JSON.stringify({grades:db.prepare('SELECT * FROM grades').all(),exams:db.prepare('SELECT * FROM exams').all(),tokens:db.prepare('SELECT * FROM ai_token_usage').all(),requests:db.prepare('SELECT * FROM local_ai_requests').all()});
+  const before=preserved(),freshBefore=await get(fresh.id),failedBefore=await get(failed.id);
+  const started=await call('/review/normalize-batch',{cachedOnly:true});assert.equal(started.status,202,JSON.stringify(started.json));const batch=await finished();assert.equal(batch.total,1);assert.equal(batch.succeeded,1);assert.equal(batch.failed,0);assert.equal(requests.length,0);
+  const saved=await get(cached.id);assert.equal(saved.status,'active');assert.equal(saved.title,'済む');assert.equal(saved.normalizationStatus,'none');assert.equal(saved.candidate,null);assert.ok(saved.dueAt);
+  assert.deepEqual(await get(fresh.id),freshBefore);assert.deepEqual(await get(failed.id),failedBefore);assert.equal(preserved(),before);
+  assert.equal((await call('/review/normalize-batch',{cachedOnly:true})).status,400);assert.equal(requests.length,0);
+});
+
+test('single-item HTTP normalization reuses a legacy saved suggestion and directly enters the editable review schedule without AI',async t=>{
+  const {db,requests,call,add,get}=await setup(t,()=>{throw new Error('legacy candidate must be reused');});
+  const point=add('済んで');db.prepare("UPDATE review_points SET normalization_status='completed',candidate_json=? WHERE id=?").run(JSON.stringify(candidate('済む')),point.id);
+  const result=await call('/review/points/'+point.id+'/normalize',{});assert.equal(result.status,200,JSON.stringify(result.json));assert.equal(result.json.item.status,'active');assert.equal(result.json.item.title,'済む');assert.ok(result.json.item.dueAt);assert.equal(result.json.item.sources[0].text,'済んで');assert.equal(requests.length,0);
+  const repeated=await call('/review/points/'+point.id+'/normalize',{});assert.equal(repeated.status,200);assert.equal(repeated.json.item.dueAt,result.json.item.dueAt);assert.equal(requests.length,0);
+  const edited=await call('/review/points/'+point.id,{meaning:'事后直接修改这一个知识点。'},'PUT');assert.equal(edited.status,200);assert.equal((await get(point.id)).meaning,'事后直接修改这一个知识点。');assert.equal(requests.length,0);
 });
 
 test('an individual failure records useful HTTP diagnostics, continues other points and retries only the unfinished candidate on demand', async t => {
@@ -94,9 +118,9 @@ test('an individual failure records useful HTTP diagnostics, continues other poi
   const points = [add('成功語一'), add('失敗語'), add('成功語二')]; await start(); const first = await finished(); assert.equal(first.status, 'completed'); assert.equal(first.total, 3); assert.equal(first.succeeded, 2); assert.equal(first.failed, 1); assert.equal(requests.length, 3);
   const failure = first.items.find((item: any) => item.id === points[1].id); assert.equal(failure.status, 'failed'); assert.match(failure.error, /网络|OPENAI_NETWORK_ERROR/);
   const history = await call('/diagnostics?operation=review'); assert.equal(history.json.total, 1); assert.equal(history.json.items[0].requestId, 'req-batch-normalize-network'); assert.equal(history.json.items[0].upstreamStatus, 503); assert.ok(history.json.items[0].createdAt); assert.match(history.json.items[0].upstreamMessage, /Synthetic normalization/);
-  assert.equal((await get(points[1].id)).normalizationStatus, 'failed'); fail = false;
+  const failed=await get(points[1].id);assert.equal(failed.normalizationStatus, 'failed');assert.equal(failed.status,'draft');assert.equal(failed.dueAt,null);assert.equal((await get(points[0].id)).status,'active');assert.equal((await get(points[2].id)).status,'active'); fail = false;
   await start(); const retried = await finished(); assert.notEqual(retried.id, first.id); assert.equal(retried.total, 1); assert.equal(retried.succeeded, 1); assert.equal(retried.failed, 0); assert.equal(requests.length, 4); assert.equal(requests.at(-1)!.selectedText, '失敗語');
-  assert.equal((await call('/diagnostics?operation=review')).json.total, 1, 'successful retry must preserve earlier failure details');
+  assert.equal((await get(points[1].id)).status,'active');assert.equal((await call('/diagnostics?operation=review')).json.total, 1, 'successful retry must preserve earlier failure details');
 });
 
 test('a global quota failure stops the batch after one actual attempt and leaves remaining originals available to retry', async t => {
@@ -125,7 +149,7 @@ test('background status survives refresh and concurrent start, holds the learnin
   const forged = await fetch(origin + '/api/review/normalize-batch/' + started.json.batch.id + '/stop', { method: 'POST', headers: { Origin: 'https://example.invalid', 'Content-Type': 'application/json' }, body: '{}' }); assert.equal(forged.status, 403);
   const stop = await call('/review/normalize-batch/' + started.json.batch.id + '/stop', {}); assert.equal(stop.json.batch.status, 'stopping'); assert.equal(requests.length, 1); assert.equal(service.isBusy(), true);
   gate.release(); const stopped = await finished(); assert.equal(stopped.status, 'stopped'); assert.equal(stopped.processed, 1); assert.equal(stopped.succeeded, 1); assert.equal(stopped.items.filter((item: any) => item.status === 'skipped').length, 2); assert.equal(service.isBusy(), false);
-  const states = await Promise.all(points.map(point => get(point.id))); assert.equal(states.filter(point => point.normalizationStatus === 'completed').length, 1); assert.equal((await overview()).eligibleCount, 2);
+  const states = await Promise.all(points.map(point => get(point.id))); assert.equal(states.filter(point => point.status === 'active').length, 1); assert.equal((await overview()).eligibleCount, 2);
   await start(); const remaining = await finished(); assert.equal(remaining.total, 2); assert.equal(remaining.succeeded, 2); assert.equal(requests.length, 3);
 });
 
@@ -164,4 +188,5 @@ test('a new explicit batch action clears the application quota pause once, while
   upstreamAvailable = true;
   await call({}); const complete = await finished(); assert.equal(complete.status, 'completed'); assert.equal(complete.succeeded, 3); assert.equal(attempts, 4); assert.equal(resets, 2, 'only the second explicit user action clears the previous global pause');
   assert.equal(Number(db.prepare('SELECT COUNT(*) AS n FROM ai_failures').get()!.n), 1); assert.equal(Number(db.prepare('SELECT COUNT(*) AS n FROM local_ai_requests').get()!.n), 4);
+  assert.equal(Number(db.prepare("SELECT COUNT(*) AS n FROM review_points WHERE status='active' AND stage=0 AND due_at IS NOT NULL").get()!.n),3);assert.equal(Number(db.prepare('SELECT COUNT(*) AS n FROM review_events').get()!.n),0);
 });

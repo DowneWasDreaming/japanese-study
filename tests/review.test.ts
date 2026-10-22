@@ -40,13 +40,13 @@ test('source validation rejects forged text, foreign question, unknown fields an
   assert.equal(add().item.title,'済んで');
 });
 
-test('AI normalization waits for submission and returns a context-aware candidate requiring confirmation',async t=>{
+test('AI normalization waits for submission and immediately activates a context-aware knowledge point',async t=>{
   let calls=0;let payload:any;let model:string|undefined;const{service,add,submit}=setup(t,{async generate(messages,selected){calls++;payload=JSON.parse(messages[1].content);model=selected;return JSON.stringify(candidate);}});
   const point=add().item;await assert.rejects(service.normalize(point.id),code('REVIEW_NOT_SUBMITTED'));assert.equal(calls,0);
-  submit();const normalized=await service.normalize(point.id);assert.equal(calls,1);assert.equal(model,'selected-model');assert.equal(normalized.item.status,'draft');assert.equal(normalized.item.dueAt,null);assert.deepEqual(normalized.item.candidate,candidate);
+  submit();const normalized=await service.normalize(point.id);assert.equal(calls,1);assert.equal(model,'selected-model');assert.equal(normalized.item.status,'active');assert.equal(normalized.item.dueAt,base);assert.equal(normalized.item.candidate,null);for(const key of Object.keys(candidate))assert.equal((normalized.item as any)[key],(candidate as any)[key]);
   await service.normalize(point.id);assert.equal(calls,1,'completed candidates are reused after uncertain retries');
   assert.equal(payload.selectedText,'済んで');assert.equal(payload.context,question.prompt);assert.equal(payload.intent,'想复习原形和总体用法。');assert.equal(payload.scope,'broad');
-  const active=service.confirm(point.id,{...candidate,scope:'broad'}).item;assert.equal(active.status,'active');assert.equal(active.title,'済む');assert.equal(active.dueAt,base);assert.equal(active.candidate,null);assert.equal(active.normalizationStatus,'none');
+  const active=service.get(point.id);assert.equal(active.status,'active');assert.equal(active.title,'済む');assert.equal(active.dueAt,base);assert.equal(active.candidate,null);assert.equal(active.normalizationStatus,'none');
 });
 
 test('manual confirmation can organize a saved mark without model permission or a submitted paper',t=>{
@@ -54,11 +54,30 @@ test('manual confirmation can organize a saved mark without model permission or 
   assert.equal(active.status,'active');assert.equal(active.canNormalize,false);assert.equal(active.repetitions,0);assert.equal(active.sources[0].text,'済んで');
 });
 
+test('saved legacy candidates activate without model permission but never bypass the source submission gate',async t=>{
+  const{service,manual,add,db,submit}=setup(t);
+  const legacy=manual('保存済み');db.prepare("UPDATE review_points SET normalization_status='completed',candidate_json=? WHERE id=?").run(JSON.stringify(candidate),legacy.id);
+  const activated=await service.normalize(legacy.id);assert.equal(activated.item.status,'active');assert.equal(activated.item.dueAt,base);assert.equal(activated.item.normalizationStatus,'none');assert.equal(activated.item.candidate,null);assert.equal(activated.item.repetitions,0);
+  assert.equal((await service.normalize(legacy.id)).item.id,legacy.id,'a retry reads the already activated card');
+  const linked=add().item;db.prepare("UPDATE review_points SET normalization_status='completed',candidate_json=? WHERE id=?").run(JSON.stringify(candidate),linked.id);
+  await assert.rejects(service.normalize(linked.id),code('REVIEW_NOT_SUBMITTED'));assert.equal(service.get(linked.id).status,'draft');
+  submit();const merged=await service.normalize(linked.id);assert.equal(merged.merged,true);assert.equal(merged.item.id,legacy.id);assert.equal(merged.item.sources.length,2);
+});
+
+test('automatic normalization merges sources into existing active, paused or mastered points without resetting progress',async t=>{
+  for(const state of ['active','paused','mastered'] as const){
+    let calls=0;const{service,activate,snapshot}=setup(t,{async generate(){calls++;return JSON.stringify(candidate);}});
+    const existing=activate();service.rate(existing.id,{rating:'good',requestId:randomUUID()});if(state==='paused')service.update(existing.id,{status:'paused'});if(state==='mastered')service.rate(existing.id,{rating:'mastered',requestId:randomUUID()});
+    const before=service.get(existing.id),draft=service.add({text:'另一处済んで',level:'N5'}).item;const result=await service.normalize(draft.id);
+    assert.equal(calls,1);assert.equal(result.merged,true);assert.equal(result.item.id,existing.id);assert.equal(result.item.status,state);assert.equal(result.item.level,before.level);assert.equal(result.item.stage,before.stage);assert.equal(result.item.dueAt,before.dueAt);assert.equal(result.item.lastReviewedAt,before.lastReviewedAt);assert.equal(result.item.repetitions,before.repetitions);assert.equal(result.item.sources.length,2);assert.equal(snapshot().review_points.length,1);assert.equal(snapshot().review_events.length,before.repetitions);
+  }
+});
+
 test('manual entries normalize without a paper while malformed output preserves each failure diagnosis',async t=>{
   let calls=0;const{service,manual,diagnostics}=setup(t,{async generate(){calls++;if(calls===1)return '{bad json';if(calls===2)throw Object.assign(new Error('connection reset'),{code:'ECONNRESET',diagnostics:{networkCode:'ECONNRESET',upstreamMessage:'Synthetic reset'}});return JSON.stringify(candidate);}});
   const draft=manual();assert.equal(draft.canNormalize,true);
   assert.equal((await service.normalize(draft.id)).item.normalizationStatus,'failed');assert.equal((await service.normalize(draft.id)).item.normalizationStatus,'failed');
-  const result=await service.normalize(draft.id);assert.equal(result.item.normalizationStatus,'completed');assert.equal(result.item.status,'draft');
+  const result=await service.normalize(draft.id);assert.equal(result.item.normalizationStatus,'none');assert.equal(result.item.status,'active');
   const failures=diagnostics.list({operation:'review'});assert.equal(failures.total,2);assert.ok(failures.items.some(item=>item.networkCode==='ECONNRESET'));assert.ok(failures.items.every(item=>item.operation==='review'));
 });
 
@@ -139,7 +158,7 @@ test('paper deletion detaches source references but retains usable knowledge and
 test('pending normalization recovers exactly once and preserves completed candidates and schedules',async t=>{
   const{db,service,manual,diagnostics}=setup(t,{async generate(){return JSON.stringify(candidate);}});const pending=manual('済んで'),done=manual('しまう');await service.normalize(done.id);
   db.prepare("UPDATE review_points SET normalization_status='pending' WHERE id=?").run(pending.id);service.recoverPending('整理已中断，可重试。');service.recoverPending('整理已中断，可重试。');
-  assert.equal(service.get(pending.id).normalizationStatus,'failed');assert.equal(service.get(done.id).normalizationStatus,'completed');assert.equal(diagnostics.list({operation:'review'}).total,1);
+  assert.equal(service.get(pending.id).normalizationStatus,'failed');assert.equal(service.get(done.id).normalizationStatus,'none');assert.equal(service.get(done.id).status,'active');assert.equal(diagnostics.list({operation:'review'}).total,1);
 });
 
 test('backup row schemas and semantic validator reject mismatched anchors, states, canonical keys and event counters',t=>{

@@ -45,8 +45,8 @@ async function setup(t: TestContext, reply: Reply = () => JSON.stringify(normali
   return {directory,db,service,id,questions,requests,origin,call,capture,get,confirm,rate,submit,manual,setExtraBusy:(value:boolean)=>{extraBusy=value;}};
 }
 
-test('review HTTP keeps exact marked language and source context, queues before submission and requires confirmation after AI normalization',async t=>{
-  const {id,questions,requests,origin,service,call,capture,get,confirm,submit}=await setup(t);
+test('review HTTP keeps exact marked language and source context, waits for submission and automatically schedules successful AI normalization',async t=>{
+  const {id,questions,requests,origin,service,call,capture,get,submit}=await setup(t);
   const added=await capture();assert.equal(added.status,200,JSON.stringify(added.json));const point=added.json.item;
   assert.equal(point.status,'draft');assert.equal(point.scope,'broad');assert.equal(point.sources[0].text,'済んで');assert.equal(point.sources[0].context,questions[0].prompt);
   assert.equal(point.sources[0].examId,id);assert.equal(requests.length,0);assert.equal(service.getExam(id).questions[0].answer,undefined);
@@ -56,10 +56,21 @@ test('review HTTP keeps exact marked language and source context, queues before 
   const forged=await fetch(origin+'/api/review/points',{method:'POST',headers:{Origin:'https://example.invalid','Content-Type':'application/json'},body:JSON.stringify({text:'済む',level:'N5'})});assert.equal(forged.status,403);
   await submit();const grades=JSON.stringify(service.getExam(id).grades);
   const normalizedResult=await call('/review/points/'+point.id+'/normalize',{});assert.equal(normalizedResult.status,200,JSON.stringify(normalizedResult.json));
-  const candidate=(await get(point.id)).json.item;assert.equal(candidate.status,'draft');assert.equal(candidate.normalizationStatus,'completed');assert.equal(candidate.candidate.title,'済む');
-  assert.equal(candidate.sources[0].text,'済んで');assert.equal(requests.length,1);assert.equal(requests[0].model,'review-test-model');
-  const activated=await confirm(point.id,{...normalized,focus:'済む的常见用法及搭配，包含但不限于て形。'});assert.equal(activated.status,200);assert.equal(activated.json.item.status,'active');assert.equal(activated.json.item.title,'済む');
-  assert.ok(activated.json.item.dueAt);assert.equal(JSON.stringify(service.getExam(id).grades),grades);
+  const active=(await get(point.id)).json.item;assert.equal(active.status,'active');assert.equal(active.normalizationStatus,'none');assert.equal(active.candidate,null);assert.equal(active.title,'済む');
+  assert.equal(active.sources[0].text,'済んで');assert.equal(requests.length,1);assert.equal(requests[0].model,'review-test-model');
+  assert.equal(active.stage,0);assert.ok(active.dueAt);assert.equal(active.repetitions,0);assert.equal(service.reviews.choose({level:'N5',count:1})[0].id,point.id);
+  const repeated=await call('/review/points/'+point.id+'/normalize',{});assert.equal(repeated.status,200);assert.equal(repeated.json.item.dueAt,active.dueAt);assert.equal(requests.length,1,'repeating a completed automatic activation must not invoke AI again');
+  const edited=await call('/review/points/'+point.id,{focus:'済む的常见用法及搭配，包含但不限于て形。'},'PUT');assert.equal(edited.status,200);assert.equal(edited.json.item.status,'active');assert.equal(edited.json.item.title,'済む');
+  assert.equal(JSON.stringify(service.getExam(id).grades),grades,'automatic scheduling never regrades the source paper');
+});
+
+test('AI normalization automatically merges the same concept without resetting existing mastery or its edited level',async t=>{
+  const {call,capture,manual,rate,get,submit,requests}=await setup(t);
+  const existing=await manual('済む');await call('/review/points/'+existing.id,{level:'N3'},'PUT');await rate(existing.id,'mastered');
+  const before=(await get(existing.id)).json.item,draft=(await capture()).json.item;await submit();
+  const result=await call('/review/points/'+draft.id+'/normalize',{});assert.equal(result.status,200,JSON.stringify(result.json));assert.equal(result.json.item.id,existing.id);
+  const saved=result.json.item;assert.equal(saved.status,'mastered');assert.equal(saved.stage,7);assert.equal(saved.level,'N3');assert.equal(saved.dueAt,null);assert.equal(saved.repetitions,before.repetitions);assert.equal(saved.lastReviewedAt,before.lastReviewedAt);
+  assert.ok(saved.sources.some((source:any)=>source.text==='済んで'));assert.equal((await get(draft.id)).status,404);assert.equal(requests.length,1);
 });
 
 test('canonical confirmation merges repeated broad marks without resetting mastery, while context-only points remain separate',async t=>{
@@ -233,5 +244,5 @@ test('normalization holds the global learning lock and logs each failure without
   assert.equal((await call('/data/delete-preview',{scope:'all'})).status,409);assert.equal((await call('/restore',backup)).status,409);assert.equal((await call('/exams/'+id+'/retry',{})).status,409);
   release();await flight;const failed=(await get(point.id)).json.item;assert.equal(failed.status,'draft');assert.equal(failed.normalizationStatus,'failed');assert.ok(failed.error);
   const history=service.diagnostics.list({operation:'review'});assert.equal(history.total,1);assert.equal(history.items[0].upstreamMessage,'Synthetic review failure.');assert.equal(history.items[0].requestId,'req-review-normalize');
-  fail=false;await call('/review/points/'+point.id+'/normalize',{});assert.equal((await get(point.id)).json.item.normalizationStatus,'completed');assert.equal(service.diagnostics.list({operation:'review'}).total,1);assert.equal(JSON.stringify(service.getExam(id).grades),grades);
+  assert.equal(failed.dueAt,null);fail=false;await call('/review/points/'+point.id+'/normalize',{});assert.equal((await get(point.id)).json.item.status,'active');assert.equal((await get(point.id)).json.item.normalizationStatus,'none');assert.ok((await get(point.id)).json.item.dueAt);assert.equal(service.diagnostics.list({operation:'review'}).total,1);assert.equal(JSON.stringify(service.getExam(id).grades),grades);
 });
