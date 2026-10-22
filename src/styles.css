@@ -710,6 +710,27 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--green); }
 .review-how { margin-bottom: 21px; align-items: flex-start; }
 .review-how strong { display: block; font-size: 12px; line-height: 1.9; color: var(--green); }
 .review-how p { font-size: 11px; line-height: 2; margin-top: 8px; }
+.review-batch { padding: 22px 24px; margin: 0 0 22px; }
+.review-batch-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.review-batch-heading h2 { display: flex; align-items: center; gap: 9px; font-size: 16px; line-height: 1.8; font-weight: 500; color: var(--green); }
+.review-batch-heading p, .review-batch-counts, .review-batch-note { font-size: 11px; line-height: 1.9; color: var(--muted); margin-top: 9px; overflow-wrap: anywhere; }
+.review-batch-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: flex-end; flex-shrink: 0; }
+.review-batch-actions .button { white-space: normal; }
+.review-batch-progress { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
+.review-batch-status { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 15px; font-size: 11px; line-height: 1.9; color: var(--muted); }
+.review-batch-status strong { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; color: var(--green); }
+.review-batch .progress-track { margin-top: 12px; }
+.review-batch-current { font-size: 11px; line-height: 1.9; margin: 12px 0; color: var(--ink); overflow-wrap: anywhere; }
+.review-batch-progress .small-muted { margin-top: 10px; }
+.review-batch-failures { margin-top: 13px; }
+.review-batch-failures summary { cursor: pointer; font-size: 11px; line-height: 1.9; color: var(--red); }
+.review-batch-failures ul { margin: 13px 0; padding: 0; display: grid; gap: 10px; list-style: none; }
+.review-batch-failures li { border-left: 2px solid var(--line); padding-left: 11px; font-size: 11px; line-height: 1.9; overflow-wrap: anywhere; }
+.review-batch-failures li p { color: var(--red); white-space: pre-wrap; margin-top: 4px; }
+.review-batch-note { margin-top: 14px; }
+.review-editor-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
+@media (max-width: 1100px) { .review-batch-heading { flex-wrap: wrap; gap: 14px; } .review-batch-actions { justify-content: flex-start; flex-shrink: 1; } }
+@media (max-width: 720px) { .review-batch { padding: 19px; } .review-batch-heading h2 { font-size: 14px; } .review-batch-heading p, .review-batch-counts, .review-batch-note, .review-batch-current { font-size: 10px; } .review-batch-actions { width: 100%; } .review-batch-actions .button { font-size: 10px; padding: 10px 12px; } .review-batch-status { font-size: 10px; } }
 .review-summary-tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 11px; margin-bottom: 22px; }
 .review-summary-tabs button { min-width: 0; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 17px 15px; border: 1px solid var(--line); background: var(--panel); border-radius: 6px; font-size: 11px; color: var(--muted); }
 .review-summary-tabs strong { color: var(--ink); font: 25px Georgia, serif; }

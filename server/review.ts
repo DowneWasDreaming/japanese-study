@@ -37,6 +37,12 @@ const keyFor=(point:Pick<PointRow,'title'|'kind'|'scope'>)=>createHash('sha256')
 const sourceKey=(row:SourceRow)=>JSON.stringify([row.exam_id,row.question_id,row.source,row.option_id,row.start_offset,row.end_offset,row.text,row.context]);
 const sameDay=(a:string,b:string)=>new Date(Date.parse(a)+8*3600_000).toISOString().slice(0,10)===new Date(Date.parse(b)+8*3600_000).toISOString().slice(0,10);
 class ReviewError extends Error {constructor(message:string,public code='REVIEW_ERROR',public status=400){super(message);}}
+export interface ReviewBatchStatus {
+  id:string;status:'running'|'stopping'|'completed'|'stopped';startedAt:string;finishedAt:string|null;
+  total:number;processed:number;succeeded:number;failed:number;current:{id:string;title:string}|null;
+  items:{id:string;title:string;status:'queued'|'running'|'completed'|'failed'|'skipped';error:string|null}[];
+  stopReason:string|null;
+}
 function validPoint(input:unknown):PointRow {
   const point=reviewPointRowSchema.parse(input);
   if(point.title!==point.title.trim()||point.focus!==point.focus.trim()||point.lapses>point.repetitions)throw new ReviewError('复习知识点字段不一致。','INVALID_REVIEW_RECORD');
@@ -103,10 +109,12 @@ export function validateReviewBackup(tables:{review_points:unknown[];review_sour
 }
 
 export class ReviewService {
-  private flights=new Map<string,Promise<{item:ReturnType<ReviewService['get']>}>>();
+  private flights=new Map<string,Promise<{item:ReturnType<ReviewService['get']>;stopBatchReason?:string}>>();
+  private batch:ReviewBatchStatus|null=null;
   constructor(private readonly db:DatabaseSync,private readonly ai:AIProvider|undefined,private readonly options:{diagnostics:FailureDiagnostics;isBusy?:()=>boolean;now?:()=>Date}){this.recoverPending('上次知识点整理因应用退出中断，原始标记已保留，可重新整理。');}
   private now(){return(this.options.now?.()||new Date()).toISOString();}
-  isBusy(){return this.flights.size>0;}
+  private batchRunning(){return this.batch?.status==='running'||this.batch?.status==='stopping';}
+  isBusy(){return this.flights.size>0||this.batchRunning();}
   private guard(){if(this.isBusy()||this.options.isBusy?.())throw new ReviewError('有出题、评分、解析或知识点整理正在进行，请完成后再操作复习记录。','REVIEW_BUSY',409);}
   private row(pointId:string){const row=this.db.prepare('SELECT * FROM review_points WHERE id=?').get(pointId) as PointRow|undefined;if(!row)throw new ReviewError('找不到这个复习知识点。','NOT_FOUND',404);return row;}
   private sources(pointId:string){return this.db.prepare('SELECT * FROM review_sources WHERE point_id=? ORDER BY created_at,rowid').all(pointId) as SourceRow[];}
@@ -123,6 +131,55 @@ export class ReviewService {
     const filtered=rows.filter(point=>query.status==='all'||query.status==='due'?query.status==='all'||due(point):point.status===query.status);
     filtered.sort((a,b)=>this.weight(b)-this.weight(a)||a.created_at.localeCompare(b.created_at));
     const total=filtered.length;return {items:filtered.slice((query.page-1)*query.pageSize,query.page*query.pageSize).map(point=>this.get(point.id)),summary,total,page:query.page,pageSize:query.pageSize,pages:Math.max(1,Math.ceil(total/query.pageSize))};
+  }
+  private batchDrafts(){return this.db.prepare("SELECT * FROM review_points WHERE status='draft' ORDER BY created_at,rowid").all() as PointRow[];}
+  private batchEligible(point:PointRow){return point.normalization_status!=='completed'&&this.canNormalize(point,this.sources(point.id));}
+  batchOverview(){
+    const drafts=this.batchDrafts();return {batch:this.batch?structuredClone(this.batch):null,totalDraftCount:drafts.length,
+      eligibleCount:drafts.filter(point=>this.batchEligible(point)).length,
+      completedCount:drafts.filter(point=>point.normalization_status==='completed').length,
+      blockedCount:drafts.filter(point=>point.normalization_status!=='pending'&&point.normalization_status!=='completed'&&!this.canNormalize(point,this.sources(point.id))).length};
+  }
+  startBatch(input:unknown){
+    z.object({}).strict().parse(input);
+    if(this.batchRunning())return {batch:structuredClone(this.batch!)};
+    this.guard();const points=this.batchDrafts().filter(point=>this.batchEligible(point));
+    if(!points.length)throw new ReviewError('没有需要 AI 整理的项目。已完成的建议会保留；来自未交卷题目的标记，请先交卷。','NO_REVIEW_NORMALIZATION_PENDING');
+    const batch:ReviewBatchStatus={id:randomUUID(),status:'running',startedAt:this.now(),finishedAt:null,total:points.length,processed:0,succeeded:0,failed:0,current:null,items:points.map(point=>({id:point.id,title:point.title,status:'queued',error:null})),stopReason:null};
+    this.batch=batch;
+    // The job belongs to the server, so a refreshed/disconnected page does not
+    // cancel it. Each point is saved before the next model request begins.
+    void Promise.resolve().then(()=>this.runBatch(batch)).catch(error=>{
+      const reason=redactFailureText((error as {message?:unknown})?.message,1750)||'批量整理因本机错误停止，已完成的建议已保留。';
+      this.options.diagnostics.record(error,{operation:'review',stage:'review-batch'});
+      this.finishBatch(batch,reason);
+    });
+    return {batch:structuredClone(batch)};
+  }
+  stopBatch(jobId:string,input:unknown){
+    z.object({}).strict().parse(input);
+    if(!this.batch||this.batch.id!==jobId)throw new ReviewError('找不到这个批量整理任务，请刷新进度。','REVIEW_BATCH_NOT_FOUND',404);
+    if(this.batch.status==='running'){this.batch.status='stopping';this.batch.stopReason='已停止后续整理，当前知识点完成后保留结果。';}
+    return {batch:structuredClone(this.batch)};
+  }
+  private finishBatch(batch:ReviewBatchStatus,reason:string|null){
+    for(const item of batch.items){
+      if(item.status==='queued'){item.status='skipped';item.error=reason;}
+      else if(item.status==='running'){item.status='failed';item.error=reason||'本次整理未完成，请查看失败记录。';batch.failed++;batch.processed++;}
+    }
+    batch.status=reason?'stopped':'completed';batch.stopReason=reason;batch.current=null;batch.finishedAt=this.now();
+  }
+  private async runBatch(batch:ReviewBatchStatus){
+    for(const item of batch.items){
+      if(batch.status==='stopping'){this.finishBatch(batch,batch.stopReason||'已停止后续整理。');return;}
+      item.status='running';batch.current={id:item.id,title:item.title};
+      const result=await this.normalizePoint(item.id,batch.id);
+      if(result.item.normalizationStatus==='completed'){item.status='completed';batch.succeeded++;}
+      else{item.status='failed';item.error=result.item.error||'本次整理未完成，请查看失败记录。';batch.failed++;}
+      batch.processed++;batch.current=null;
+      if(result.stopBatchReason){this.finishBatch(batch,'后续整理已暂停：'+result.stopBatchReason);return;}
+    }
+    this.finishBatch(batch,batch.status==='stopping'?batch.stopReason:null);
   }
   add(input:unknown){
     this.guard();const data=addSchema.parse(input),now=this.now();
@@ -150,11 +207,17 @@ export class ReviewService {
   private insert(table:'review_points'|'review_sources'|'review_events',row:PointRow|SourceRow|EventRow,schema:z.AnyZodObject){const columns=Object.keys(schema.shape);this.db.prepare(`INSERT INTO ${table}(${columns.join(',')}) VALUES(${columns.map(()=>'?').join(',')})`).run(...columns.map(column=>(row as Record<string,unknown>)[column] as string|number|null));}
   private save(point:PointRow){validPoint(point);const columns=Object.keys(reviewPointRowSchema.shape).filter(column=>column!=='id');this.db.prepare(`UPDATE review_points SET ${columns.map(column=>column+'=?').join(',')} WHERE id=?`).run(...columns.map(column=>(point as Record<string,unknown>)[column] as string|number|null),point.id);}
   async normalize(pointId:string){
+    if(this.batchRunning())throw new ReviewError('正在批量整理知识点，请等待完成或停止后再单独整理。','REVIEW_BUSY',409);
+    const result=await this.normalizePoint(pointId);return {item:result.item};
+  }
+  private async normalizePoint(pointId:string,batchId?:string):Promise<{item:ReturnType<ReviewService['get']>;stopBatchReason?:string}>{
     const previous=this.flights.get(pointId);if(previous)return previous;
     const point=this.row(pointId);if(point.normalization_status==='completed'&&point.candidate_json!==null)return {item:this.get(pointId)};
-    this.guard();if(point.status!=='draft')throw new ReviewError('已确认的知识点可直接编辑；请先添加新的待整理标记。','REVIEW_ALREADY_CONFIRMED',409);
+    if(!batchId)this.guard();else if(this.batch?.id!==batchId||!this.batchRunning())throw new ReviewError('批量整理任务已停止，请重新开始。','REVIEW_BATCH_NOT_FOUND',409);
+    if(point.status!=='draft')throw new ReviewError('已确认的知识点可直接编辑；请先添加新的待整理标记。','REVIEW_ALREADY_CONFIRMED',409);
     const sources=this.sources(pointId);if(!this.canNormalize(point,sources))throw new ReviewError('原始标记已保存，请先交卷，再请 AI 整理知识点。','REVIEW_NOT_SUBMITTED',403);
     const task=Promise.resolve().then(async()=>{
+      let stopBatchReason:string|undefined;
       point.normalization_status='pending';point.candidate_json=null;point.error=null;point.updated_at=this.now();this.save(point);
       try{
         if(!this.ai)throw new ReviewError('请先连接 ChatGPT 并授权套餐后整理知识点。','PLAN_PERMISSION_REQUIRED',403);
@@ -163,13 +226,14 @@ export class ReviewService {
         let payload:unknown;try{payload=JSON.parse(output.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''));}catch{throw new ReviewError('GPT 整理结果不是有效 JSON，原始标记已保留。','INVALID_REVIEW_OUTPUT',502);}
         const candidate=reviewCandidateSchema.parse(payload);point.normalization_status='completed';point.candidate_json=JSON.stringify(candidate);point.error=null;
       }catch(error){
-        const source=sources.at(-1)!;this.options.diagnostics.record(error,{operation:'review',examId:source.exam_id,questionId:source.question_id,stage:'review-normalize'});
-        const value=error&&typeof error==='object'?error as {publicMessage?:unknown;message?:unknown;code?:unknown}:{};
+        const source=sources.at(-1)!;const failure=this.options.diagnostics.record(error,{operation:'review',examId:source.exam_id,questionId:source.question_id,stage:'review-normalize'});
+        const value=error&&typeof error==='object'?error as {publicMessage?:unknown;message?:unknown;code?:unknown;status?:unknown;diagnostics?:{upstreamStatus?:unknown}}:{};
         const reason=error instanceof z.ZodError?'GPT 知识点候选字段、类型或长度未通过校验，请查看失败记录。':redactFailureText(value.publicMessage??value.message,1750)||'AI 知识点整理没有完成，请查看失败记录。';
         const code=typeof value.code==='string'&&/^[A-Za-z0-9_.:/-]{1,200}$/.test(value.code)?value.code:'';
         point.normalization_status='failed';point.candidate_json=null;point.error=reason+(code?`（${code}）`:'');
+        if(failure?.category==='quota'||failure?.category==='permission'||value.status===401||value.status===403||value.status===429||[401,403,429].includes(Number(value.diagnostics?.upstreamStatus))||/QUOTA|LIMIT_EXCEEDED|REQUEST_LIMIT|RATE_LIMIT|usage_limit|insufficient_quota|AUTH|PERMISSION|DENIED|eligible|TOKEN|OAUTH|invalid_grant|invalid_client|CHATGPT_NOT_CONNECTED|NOT_CONNECTED|subscription_sharing_user_unavailable|MODEL_UNAVAILABLE|MODEL_SETTINGS_INVALID/i.test(code))stopBatchReason=point.error;
       }
-      point.updated_at=this.now();this.save(point);return {item:this.get(pointId)};
+      point.updated_at=this.now();this.save(point);return {item:this.get(pointId),...(stopBatchReason?{stopBatchReason}:{})};
     });
     this.flights.set(pointId,task);try{return await task;}finally{if(this.flights.get(pointId)===task)this.flights.delete(pointId);}
   }

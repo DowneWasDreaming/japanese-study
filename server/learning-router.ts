@@ -12,6 +12,12 @@ export function createLearningRouter(service:LearningService, db:DatabaseSync, a
   const busy=()=>service.isBusy()||additionalBusy();
   const data=new DataManagementService(db,{isBusy:busy,backup:()=>service.createDeletionBackup()});
   router.get('/diagnostics',(req,res)=>res.json(service.diagnostics.list(req.query)));
+  router.get('/review/normalize-batch',(_req,res)=>res.json(service.reviews.batchOverview()));
+  router.post('/review/normalize-batch',(req,res)=>{
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再批量整理知识点。','REVIEW_BUSY',409);
+    res.status(202).json(service.reviews.startBatch(req.body));
+  });
+  router.post('/review/normalize-batch/:jobId/stop',(req,res)=>res.json(service.reviews.stopBatch(String(req.params.jobId),req.body)));
   router.get('/review/points',(req,res)=>res.json(service.reviews.list(req.query)));
   router.get('/review/points/:pointId',(req,res)=>res.json({item:service.reviews.get(String(req.params.pointId))}));
   router.post('/review/points',(req,res)=>{
