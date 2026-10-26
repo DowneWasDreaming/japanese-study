@@ -111,10 +111,14 @@ test('AI review papers freeze selected concepts, verify per-question coverage an
   const exam=(await call('/exams/'+created.json.id)).json;assert.equal(exam.reviewPoints.length,2);assert.deepEqual(new Set(exam.reviewPoints.map((point:any)=>point.id)),new Set([first.id,second.id]));
   assert.ok(exam.questions.every((question:any)=>question.reviewPointIds.length&&question.reviewPointIds.every((id:string)=>[first.id,second.id].includes(id))));
   assert.equal(requests.length,1);assert.ok(requests[0].messages[0].content.includes('复习'));
-  const savedConfig=JSON.parse(String(db.prepare('SELECT config_json FROM exams WHERE id=?').get(exam.id)!.config_json));assert.deepEqual(savedConfig.reviewSnapshot,exam.reviewPoints);
+  const savedConfig=JSON.parse(String(db.prepare('SELECT config_json FROM exams WHERE id=?').get(exam.id)!.config_json));
+  assert.deepEqual(savedConfig.reviewSnapshot.map(({reading,meaning,focus,...point}:any)=>point),exam.reviewPoints.map(({focus,...point}:any)=>point));
+  assert.ok(savedConfig.reviewSnapshot.every((point:any)=>point.reading==='すむ'&&point.meaning===normalized.meaning),'new papers freeze their readings and meanings');
+  assert.ok(exam.reviewPoints.every((point:any)=>point.reading===undefined&&point.meaning===undefined&&point.focus!==normalized.focus),'draft review metadata must not expose the answers');
   await call('/review/points/'+first.id,{title:'済む（改名后）'},'PUT');assert.equal((await call('/exams/'+exam.id)).json.reviewPoints.find((point:any)=>point.id===first.id).title,'済む','paper keeps immutable learning target');
   await call('/exams/'+exam.id+'/answers',{answers:Object.fromEntries(exam.questions.map((question:any)=>[question.id,'が']))},'PUT');
   const result=await call('/exams/'+exam.id+'/submit',{});assert.equal(result.status,200);assert.equal(result.json.score,20);assert.equal(requests.length,1,'objective review grading remains local in mixed mode');
+  assert.deepEqual(result.json.reviewPoints,savedConfig.reviewSnapshot,'submission reveals the original frozen readings, meanings and focus even after editing the live point');
   const grades=JSON.stringify(result.json.grades);assert.equal((await rate(first.id,'good',randomUUID(),exam.id)).status,200);assert.equal(JSON.stringify(service.getExam(exam.id).grades),grades);
   assert.ok((await rate(first.id,'good',randomUUID(),'not-this-exam')).status>=400);
 });
@@ -204,7 +208,7 @@ test('ordinary re-practice of review mistakes drops review references and remain
   const backup=JSON.parse(readFileSync(service.createDeletionBackup(),'utf8'));assert.equal(backup.version,5);assert.doesNotThrow(()=>validateBackup(backup));
   const restored=await call('/restore',backup);assert.equal(restored.status,200,JSON.stringify(restored.json));
   for(const id of ordinaryIds){const paper=(await call('/exams/'+id)).json;assert.equal(paper.questions[0].reviewPointIds,undefined);assert.deepEqual(paper.reviewPoints,[]);}
-  assert.deepEqual((await call('/exams/'+review.id)).json.reviewPoints,review.reviewPoints,'source review paper retains its frozen snapshot');
+  assert.deepEqual((await call('/exams/'+review.id)).json.reviewPoints,submitted.json.reviewPoints,'source review paper retains its submitted frozen snapshot across backup restoration');
 });
 
 test('restoring a rating linked to an unsubmitted review paper is rejected before database writes',async t=>{
