@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { ArrowLeft, ArrowRight, Check, CircleHelp, Clipboard, Clock3, ExternalLink, History, LoaderCircle, RefreshCw, ShieldCheck } from 'lucide-react';
-import { RequestProgressSummary, type ModelRequestProgress } from './AIRequestProgress';
+import { RequestProgressSummary, requestTimeoutKind, requestTimeoutName, type ModelRequestProgress } from './AIRequestProgress';
 
 type Operation = 'generate' | 'grade' | 'annotation' | 'review' | 'explain' | 'followup' | 'models' | 'connection' | 'auth';
 type Category = 'network' | 'upstream' | 'validation' | 'permission' | 'quota' | 'interrupted' | 'local';
@@ -44,6 +44,7 @@ function diagnosticText(item: AIDiagnostic) {
     '记录 ID：' + item.id, '时间：' + localTime(item.createdAt) + ' (' + item.createdAt + ')',
     '操作：' + (operationNames[item.operation] || item.operation), '分类：' + (categoryNames[item.category] || item.category),
     '错误码：' + item.code, '具体原因：' + item.message,
+    ...(item.code === 'MODEL_REQUEST_TIMEOUT' ? ['超时类型：' + requestTimeoutName(item.progress)] : []),
     '处理阶段：' + (item.stage || '未记录'), '本地错误状态（内部状态码）：' + (item.httpStatus ?? '未记录'),
     'GPT / 上游 HTTP 状态：' + (item.upstreamStatus ?? '未记录'), '网络错误码：' + (item.networkCode || '未记录'),
     'GPT / 上游错误消息（已脱敏）：' + (item.upstreamMessage || '未记录到上游错误消息'),
@@ -59,7 +60,9 @@ function diagnosticText(item: AIDiagnostic) {
 function DiagnosticCard({ item, notify }: { item: AIDiagnostic; notify: (text: string) => void }) {
   const [copied, setCopied] = useState(false);
   const timeout = item.code === 'MODEL_REQUEST_TIMEOUT', legacyTimeout = !item.progress && item.code === 'MODEL_STREAM_INTERRUPTED' && item.networkCode === 'TimeoutError';
-  const categoryLabel = timeout ? '等待超时' : legacyTimeout ? '等待超时 · 旧记录' : categoryNames[item.category] || item.category;
+  const timeoutKind = requestTimeoutKind(item.progress);
+  const categoryLabel = timeout ? requestTimeoutName(item.progress) : legacyTimeout ? '等待超时 · 旧记录' : categoryNames[item.category] || item.category;
+  const timeoutExplanation = timeoutKind === 'response_timeout' ? '达到本次首次服务响应等待上限，尚未收到 HTTP 响应。此阶段无法确定远端是否开始处理。' : timeoutKind === 'stream_idle_timeout' ? '接收过程中连续没有新的网络数据，达到当时的无数据等待上限。请结合最后收到数据与正文的时间核查；正文停更本身不等于断网。' : '本次达到请求当时的总等待上限。结合最后一段正文的接收时间，判断结束前是否仍在收到内容；超时本身不代表断网。';
   async function copy() {
     try { await navigator.clipboard.writeText(diagnosticText(item)); setCopied(true); window.setTimeout(() => setCopied(false), 2500); notify('已复制脱敏诊断文本。'); }
     catch { notify('浏览器没有允许复制。可以展开详情，手动选择并复制内容。'); }
@@ -69,7 +72,7 @@ function DiagnosticCard({ item, notify }: { item: AIDiagnostic; notify: (text: s
     <h2>{item.message}</h2><div className="diagnostic-code"><span>错误码</span><code>{item.code}</code>{item.upstreamStatus != null && <span>上游 HTTP {item.upstreamStatus}</span>}</div>
     {item.progress ? <section className="diagnostic-progress" aria-label="失败时的请求接收进度"><h3>失败时的请求接收进度</h3><RequestProgressSummary item={item.progress} frozen /></section> : /MODEL_(?:STREAM|REQUEST|RESPONSE)|OPENAI_(?:NETWORK|RESPONSE)/.test(item.code) && <p className="diagnostic-legacy">旧记录未采集接收进度，无法回溯是否持续输出。保留的超时原因仍可在详情中查看。</p>}
     {item.code === 'LOCAL_REQUEST_LIMIT' && <p className="diagnostic-explanation"><strong>旧版本地次数限制（现已取消）。</strong>这条错误由网站本地产生，不是 GPT 返回的额度错误，也不能据此判断官方额度已用完。</p>}
-    {item.source === 'legacy' ? <p className="diagnostic-legacy"><CircleHelp size={14} />升级前最后一次错误，完整历史不可追溯。这条记录只能反映当时最后保存的原因，无法补出此前每次重试的详情。</p> : <p className="diagnostic-explanation">{timeout ? '本次达到网站本地的总等待上限。结合最后一段正文的接收时间，判断结束前是否仍在收到内容；超时本身不代表断网。' : legacyTimeout ? '本次记录为等待超时，超时本身不代表断网。旧记录没有接收时间线，无法判断结束前是否仍在收到内容。' : categoryDescriptions[item.category] || '展开详情查看此调用保存的具体原因。'}</p>}
+    {item.source === 'legacy' ? <p className="diagnostic-legacy"><CircleHelp size={14} />升级前最后一次错误，完整历史不可追溯。这条记录只能反映当时最后保存的原因，无法补出此前每次重试的详情。</p> : <p className="diagnostic-explanation">{timeout ? timeoutExplanation : legacyTimeout ? '本次记录为等待超时，超时本身不代表断网。旧记录没有接收时间线，无法判断结束前是否仍在收到内容。' : categoryDescriptions[item.category] || '展开详情查看此调用保存的具体原因。'}</p>}
     <details className="diagnostic-details"><summary>查看具体错误与 GPT 返回信息</summary><div className="diagnostic-detail-body">
       <dl className="diagnostic-facts"><div><dt>发生时间</dt><dd>{localTime(item.createdAt)}<small>{item.createdAt}</small></dd></div><div><dt>处理阶段</dt><dd>{item.stage || '未记录'}</dd></div><div><dt>本地错误状态（内部状态码）</dt><dd>{item.httpStatus ?? '未记录'}</dd></div><div><dt>GPT / 上游 HTTP 状态</dt><dd>{item.upstreamStatus ?? '未返回或未记录'}</dd></div><div><dt>网络错误码</dt><dd><code>{item.networkCode || '未记录'}</code></dd></div><div><dt>使用模型</dt><dd>{item.model || '未记录'}</dd></div><div><dt>Request ID</dt><dd><code>{item.requestId || '未返回或未记录'}</code></dd></div><div><dt>Response ID</dt><dd><code>{item.responseId || '未返回或未记录'}</code></dd></div></dl>
       <section className="diagnostic-message"><h3>GPT / 上游错误消息（已脱敏）</h3>{item.upstreamMessage ? <pre>{item.upstreamMessage}</pre> : item.upstreamStatus !== null && item.upstreamStatus >= 200 && item.upstreamStatus < 300 ? <p>未收到明确上游错误消息。HTTP {item.upstreamStatus} 仅表示响应开始，不代表生成完成；以本地原因和接收记录判断。</p> : <p>未记录到上游错误消息，不能据此推断 GPT 已收到请求。请结合分类、处理阶段和本地原因查看。</p>}</section>

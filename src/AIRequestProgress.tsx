@@ -7,8 +7,19 @@ export type ModelRequestProgress = {
   firstEventAt: string | null; lastEventAt: string | null; firstTextAt: string | null; lastTextAt: string | null; endedAt: string | null;
   elapsedMs: number; sinceLastByteMs: number | null; sinceLastEventMs: number | null; sinceLastTextMs: number | null;
   timeoutMs: number; receivedBytes: number; eventCount: number; textCharacters: number;
+  responseTimeoutMs?: number; streamIdleTimeoutMs?: number;
+  timeoutKind?: 'response_timeout' | 'stream_idle_timeout' | 'total_timeout' | null;
   lastEventType: string | null; httpStatus: number | null; errorCode: string | null; reason: string | null;
 };
+
+export function requestTimeoutKind(item?: ModelRequestProgress | null) {
+  const kind = item?.timeoutKind || item?.reason;
+  return kind === 'response_timeout' || kind === 'stream_idle_timeout' || kind === 'total_timeout' ? kind : null;
+}
+export function requestTimeoutName(item?: ModelRequestProgress | null) {
+  const kind = requestTimeoutKind(item);
+  return kind === 'response_timeout' ? '首次响应超时' : kind === 'stream_idle_timeout' ? '连续无数据超时' : kind === 'total_timeout' ? '总等待超时' : '等待超时';
+}
 
 const active = (item: ModelRequestProgress) => item.state !== 'completed' && item.state !== 'failed';
 export function progressDuration(value: number) {
@@ -30,16 +41,20 @@ function progressHeading(item: ModelRequestProgress, frozen: boolean) {
 }
 
 export function RequestProgressSummary({ item, frozen = false }: { item: ModelRequestProgress; frozen?: boolean }) {
+  const phased = item.responseTimeoutMs !== undefined && item.streamIdleTimeoutMs !== undefined;
+  const kind = requestTimeoutKind(item);
   return <div className={'ai-request-progress-summary' + (frozen ? ' frozen' : '')}>
     <div className="ai-progress-title"><strong>{progressHeading(item, frozen)}</strong><span>{item.model}</span></div>
+    <div className="ai-progress-policy"><strong>{frozen ? '当时等待策略' : '本次等待策略'}</strong><span>{phased ? <>首次服务响应 {progressDuration(item.responseTimeoutMs!)} · 连续无网络数据 {progressDuration(item.streamIdleTimeoutMs!)} · 总上限 {progressDuration(item.timeoutMs)}</> : <>总上限 {progressDuration(item.timeoutMs)}{frozen && '；旧记录未保存分阶段阈值'}</>}</span>{phased && <p>收到网络数据会重新计算“连续无数据”时间，总上限从请求开始独立计时。持续接收时可以继续等待，直到完成或达到总上限。</p>}</div>
+    {frozen && item.errorCode === 'MODEL_REQUEST_TIMEOUT' && <p className="ai-progress-timeout-cause"><strong>{requestTimeoutName(item)}</strong>：{kind === 'response_timeout' ? '达到当时的首次响应等待上限，尚未收到 HTTP 响应。' : kind === 'stream_idle_timeout' ? '接收期间连续没有新的网络数据，达到当时的无数据等待上限。' : kind === 'total_timeout' ? '达到这次请求当时的总等待上限；是否仍在接收正文请看最后接收时间。' : '具体触发阶段见原始错误与接收记录。'}</p>}
     <dl className="ai-progress-metrics">
-      <div><dt>{frozen ? '结束时总耗时' : '已等待'}</dt><dd>{progressDuration(item.elapsedMs)}<small>总等待上限 {progressDuration(item.timeoutMs)}</small></dd></div>
+      <div><dt>{frozen ? '结束时总耗时' : '已等待'}</dt><dd>{progressDuration(item.elapsedMs)}<small>{frozen ? '当时总上限' : '本次总上限'} {progressDuration(item.timeoutMs)}</small></dd></div>
       <div><dt>收到服务响应</dt><dd>{item.httpStatus !== null ? 'HTTP ' + item.httpStatus : '未收到 HTTP 响应'}<small>{item.headersAt ? afterStart(item.headersAt, item) : '尚不能判断远端是否开始处理'}</small></dd></div>
       <div><dt>第一段答案正文</dt><dd>{item.firstTextAt ? afterStart(item.firstTextAt, item) : '尚未收到答案正文'}<small>已收到 {item.textCharacters.toLocaleString('zh-CN')} 字符</small></dd></div>
       <div><dt>最近一段答案正文</dt><dd>{lastReceived(item.sinceLastTextMs, frozen)}<small>{item.sinceLastTextMs !== null && item.sinceLastTextMs > 15_000 ? '一段时间没有新正文，仍在等待' : frozen ? '这是本次结束时的接收记录' : '仅表示最近实际收到正文的时间'}</small></dd></div>
     </dl>
     <p className="ai-progress-last">最近服务进度：{lastReceived(item.sinceLastEventMs, frozen)}<span>最近网络数据：{lastReceived(item.sinceLastByteMs, frozen)}</span></p>
-    <p className="ai-progress-caveat">网络数据或处理进度不代表答案在持续生成；暂时没有新内容，也不能断定远端已经停止。这里无法直接判断远端排队、模型计算或网络链路哪个环节较慢。</p>
+    <p className="ai-progress-caveat">心跳也属于网络数据，会保持连接等待，但不代表答案在持续生成；正文暂时停更也不等于断网。这里无法直接判断远端排队、模型计算或网络链路哪个环节较慢。</p>
     <details className="ai-progress-details"><summary>查看接收时间与事件详情</summary><dl>
       <div><dt>开始请求（北京时间）</dt><dd>{timestamp(item.startedAt)}</dd></div>
       <div><dt>收到 HTTP 响应</dt><dd>{timestamp(item.headersAt)}</dd></div>

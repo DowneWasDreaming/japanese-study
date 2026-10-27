@@ -60,7 +60,7 @@ test('HTTP progress distinguishes waiting headers, processing and received text 
     stream=controlledStream(init.signal);
     return new Promise<Response>((resolve,reject)=>{releaseHeaders=resolve;init.signal?.addEventListener('abort',()=>reject(init.signal?.reason),{once:true});});
   });
-  assert.deepEqual((await call('/ai/progress')).data,{items:[]});
+  const idle=(await call('/ai/progress')).data;assert.deepEqual(idle.items,[]);assert.deepEqual(idle.policy,model.getRequestProgress().policy);
   const running=model.generate([{role:'user',content:'PRIVATE_PROMPT_NO_PROGRESS_LEAK'}]).then(value=>({value,error:null}),error=>({value:null,error}));
   await until(()=>calls()===1,'the one inference request started');
   const before=(await call('/ai/progress')).data.items[0] as ModelRequestProgress;

@@ -8,9 +8,36 @@ import { ModelProgressTracker } from './model-progress.js';
 
 export type ModelMessage = {role:'user'|'assistant'|'developer';content:string};
 export type ModelChoice = {id:string;name:string};
-export type ModelOptions = {settingsFile?:string;fetch?:typeof fetch;onUsage?:(event:TokenUsageEvent)=>void|Promise<void>;requestTimeoutMs?:number};
+export type ModelOptions = {settingsFile?:string;fetch?:typeof fetch;onUsage?:(event:TokenUsageEvent)=>void|Promise<void>;requestTimeoutMs?:number;responseTimeoutMs?:number;streamIdleTimeoutMs?:number};
 const CatalogSchema = z.object({models:z.array(z.object({slug:z.string().min(1),display_name:z.string().min(1),visibility:z.string()}))});
 const MessageSchema = z.array(z.object({role:z.enum(['developer','user','assistant']),content:z.string().min(1).max(100000)}).strict()).min(1).max(100);
+
+type TimeoutKind='response_timeout'|'stream_idle_timeout'|'total_timeout';
+/** Network silence and total duration are independent: arriving chunks renew
+ * only the silence timer. The overall deadline never moves. */
+class ModelRequestDeadlines {
+  readonly controller=new AbortController();
+  kind:TimeoutKind|null=null;
+  private totalTimer:ReturnType<typeof setTimeout>;
+  private responseTimer:ReturnType<typeof setTimeout>;
+  private idleTimer:ReturnType<typeof setTimeout>|undefined;
+  private stopped=false;
+  constructor(totalMs:number,responseMs:number,private readonly idleMs:number){
+    this.totalTimer=setTimeout(()=>this.abort('total_timeout'),totalMs);
+    this.responseTimer=setTimeout(()=>this.abort('response_timeout'),responseMs);
+  }
+  private abort(kind:TimeoutKind){
+    if(this.stopped||this.controller.signal.aborted)return;
+    this.kind=kind;this.stop();
+    this.controller.abort(new DOMException('The operation was aborted due to timeout','TimeoutError'));
+  }
+  headers(){clearTimeout(this.responseTimer);this.activity();}
+  activity(){
+    if(this.stopped||this.controller.signal.aborted)return;
+    clearTimeout(this.idleTimer);this.idleTimer=setTimeout(()=>this.abort('stream_idle_timeout'),this.idleMs);
+  }
+  stop(){this.stopped=true;clearTimeout(this.totalTimer);clearTimeout(this.responseTimer);clearTimeout(this.idleTimer);}
+}
 
 /** A single OAuth service for exam creation, explanations, parsing, and grading. */
 export class ModelService {
@@ -26,14 +53,18 @@ export class ModelService {
   private readonly onUsage:ModelOptions['onUsage'];
   private readonly progress=new ModelProgressTracker();
   private readonly requestTimeoutMs:number;
+  private readonly responseTimeoutMs:number;
+  private readonly streamIdleTimeoutMs:number;
   constructor(private readonly auth:AuthManager,options:ModelOptions = {}) {
     this.network = options.fetch || fetch; this.settingsFile = options.settingsFile || join(auth.credentialDir,'model-selection.json');
     this.onUsage = options.onUsage;
-    this.requestTimeoutMs=options.requestTimeoutMs??180000;
-    if(!Number.isSafeInteger(this.requestTimeoutMs)||this.requestTimeoutMs<1||this.requestTimeoutMs>2_147_483_647)throw new Error('Invalid model request timeout.');
+    const validTimeout=(value:number)=>{if(!Number.isSafeInteger(value)||value<1||value>2_147_483_647)throw new Error('Invalid model request timeout.');return value;};
+    this.requestTimeoutMs=validTimeout(options.requestTimeoutMs??900000);
+    this.responseTimeoutMs=Math.min(validTimeout(options.responseTimeoutMs??60000),this.requestTimeoutMs);
+    this.streamIdleTimeoutMs=Math.min(validTimeout(options.streamIdleTimeoutMs??120000),this.requestTimeoutMs);
   }
   get selectedModel() { return this.selected; }
-  getRequestProgress() {return this.progress.list(this.auth.status().planAuthorized?this.auth.accountKey():null);}
+  getRequestProgress() {return {...this.progress.list(this.auth.status().planAuthorized?this.auth.accountKey():null),policy:{totalTimeoutMs:this.requestTimeoutMs,responseTimeoutMs:this.responseTimeoutMs,streamIdleTimeoutMs:this.streamIdleTimeoutMs}};}
   /** A new explicit user retry may probe the upstream quota again. */
   resetFailurePause() { this.blockedAccount = null; this.blockedError = null; }
   private async loadSettings() {
@@ -89,8 +120,8 @@ export class ModelService {
     if (!selected || !this.choices.some(x => x.id === selected)) throw new IntegrationError(400,'MODEL_UNAVAILABLE','没有选择当前账号可用的模型，请在设置中刷新并选择模型。');
     if (account !== this.auth.accountKey()) throw new IntegrationError(409,'AUTH_CHANGED','ChatGPT 账号已切换，请重新发起操作。');
     const attemptId = randomUUID(); const occurredAt = new Date().toISOString();
-    const signal=AbortSignal.timeout(this.requestTimeoutMs);
-    this.progress.start(attemptId,selected,account,this.requestTimeoutMs);
+    const deadlines=new ModelRequestDeadlines(this.requestTimeoutMs,this.responseTimeoutMs,this.streamIdleTimeoutMs),signal=deadlines.controller.signal;
+    this.progress.start(attemptId,selected,account,this.requestTimeoutMs,{responseTimeoutMs:this.responseTimeoutMs,streamIdleTimeoutMs:this.streamIdleTimeoutMs});
     let responseId:string|undefined;
     let usage = parseReportedTokenUsage(undefined); let succeeded = false;
     try {
@@ -98,6 +129,7 @@ export class ModelService {
     const response = await this.request('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json',Accept:'text/event-stream'},
       body:JSON.stringify({model:selected,input,store:false,stream:true})},this.requestTimeoutMs,'model-request',selected,signal);
     this.progress.headers(attemptId,response.status);
+    deadlines.headers();
     if (!response.ok) throw await this.responseError(response,'model-request',selected);
     const metadata = ():IntegrationDiagnostics => ({...responseDiagnostics(response,'model-stream'),responseId,model:selected});
     const failure = (status:number,code:string,message:string,extra:IntegrationDiagnostics = {}) => new IntegrationError(status,code,message,{...metadata(),...extra});
@@ -211,6 +243,7 @@ export class ModelService {
           break;
         }
         totalBytes += chunk.value.byteLength;
+        if(chunk.value.byteLength)deadlines.activity();
         this.progress.bytes(attemptId,chunk.value.byteLength);
         if (totalBytes > 8*1024*1024) throw failure(502,'MODEL_OUTPUT_TOO_LARGE','模型事件流超过本地允许大小。');
         buffer += decoder.decode(chunk.value,{stream:true}); buffer = buffer.replace(/\r\n/g,'\n');
@@ -232,16 +265,18 @@ export class ModelService {
       const original=error instanceof IntegrationError?error:new IntegrationError(502,'MODEL_STREAM_INTERRUPTED','读取 OpenAI 模型事件流时连接中断，未完成的内容不会保存为成功结果。',networkDiagnostics(error,'model-stream-read'));
       const before=this.progress.snapshot(attemptId);
       const timeoutTransport=['OPENAI_NETWORK_ERROR','MODEL_STREAM_INTERRUPTED','OPENAI_RESPONSE_INTERRUPTED'].includes(original.code)&&['TimeoutError','AbortError'].includes(original.diagnostics.networkCode||'');
-      const timedOut=signal.aborted&&signal.reason?.name==='TimeoutError'&&timeoutTransport;
+      const timedOut=signal.aborted&&signal.reason?.name==='TimeoutError'&&!!deadlines.kind&&timeoutTransport;
       const code=timedOut?'MODEL_REQUEST_TIMEOUT':original.code;
-      const reason=timedOut?'total_timeout':original.diagnostics.reason;
+      const reason=timedOut?deadlines.kind!:original.diagnostics.reason;
       this.progress.finish(attemptId,'failed',code,reason);
       const progress=this.progress.snapshot(attemptId);
-      const seconds=Math.round(this.requestTimeoutMs/1000);
+      const seconds=(milliseconds:number)=>Number((milliseconds/1000).toFixed(3));
       const observed=!before?.headersAt?'尚未收到 HTTP 响应':!before.eventCount?'已收到 HTTP 响应，但未收到模型事件':!before.textCharacters?'已收到模型事件，但未收到答案正文':'已收到部分答案正文，但未收到完成事件';
-      throw new IntegrationError(timedOut?504:original.status,code,timedOut?`模型请求达到 ${seconds} 秒总等待上限；${observed}。未完成内容不会保存为成功结果。`:original.publicMessage,
+      const timeoutMessage=reason==='response_timeout'?`等待 OpenAI 服务响应超过 ${seconds(this.responseTimeoutMs)} 秒，尚未收到 HTTP 响应。`:reason==='stream_idle_timeout'?`模型响应连续 ${seconds(this.streamIdleTimeoutMs)} 秒没有收到任何新网络数据；${observed}。`:`模型请求达到 ${seconds(this.requestTimeoutMs)} 秒总等待上限；${observed}。`;
+      throw new IntegrationError(timedOut?504:original.status,code,timedOut?timeoutMessage+'未完成内容不会保存为成功结果。':original.publicMessage,
         {...original.diagnostics,...(before?.httpStatus?{upstreamStatus:before.httpStatus}:{}),...(timedOut?{reason,stage:before?.headersAt?'model-stream-read':'model-request'}:{}),...(progress?{progress}:{})});
     } finally {
+      deadlines.stop();
       // Counts are optional telemetry. A broken observer cannot alter inference.
       try {
         const pending = this.onUsage?.({id:attemptId,occurredAt,model:selected,responseId:responseId || null,status:succeeded ? 'completed' : 'failed',...usage});

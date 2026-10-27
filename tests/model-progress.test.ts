@@ -78,8 +78,8 @@ test('polling observes safe progress without resetting the deadline, exposing te
   controller!.enqueue(event(complete('private answer')));assert.equal(await pending,'private answer');
   const completed=f.service.getRequestProgress().items[0];assert.equal(completed.state,'completed');assert.equal(completed.textCharacters,14);assert.ok(completed.endedAt);assert.equal(completed.errorCode,null);
   await delay(5);assert.deepEqual(f.service.getRequestProgress().items[0],completed,'terminal counters and elapsed times stay frozen');
-  f.setAccount('other-account');assert.deepEqual(f.service.getRequestProgress(),{items:[]});f.setAccount('account-a');assert.equal(f.service.getRequestProgress().items.length,1);
-  f.setAuthorized(false);assert.deepEqual(f.service.getRequestProgress(),{items:[]});
+  f.setAccount('other-account');assert.deepEqual(f.service.getRequestProgress().items,[]);f.setAccount('account-a');assert.equal(f.service.getRequestProgress().items.length,1);
+  f.setAuthorized(false);assert.deepEqual(f.service.getRequestProgress().items,[]);
 });
 
 test('EOF, socket failure and explicit upstream error preserve their cause and attach observed progress',async t=>{
