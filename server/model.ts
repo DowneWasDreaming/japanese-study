@@ -4,10 +4,11 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { AuthManager, IntegrationError, upstreamError, networkDiagnostics, responseDiagnostics, safeDiagnosticText, type IntegrationDiagnostics } from './auth.ts';
 import { parseReportedTokenUsage,type TokenUsageEvent } from './token-usage.js';
+import { ModelProgressTracker } from './model-progress.js';
 
 export type ModelMessage = {role:'user'|'assistant'|'developer';content:string};
 export type ModelChoice = {id:string;name:string};
-export type ModelOptions = {settingsFile?:string;fetch?:typeof fetch;onUsage?:(event:TokenUsageEvent)=>void|Promise<void>};
+export type ModelOptions = {settingsFile?:string;fetch?:typeof fetch;onUsage?:(event:TokenUsageEvent)=>void|Promise<void>;requestTimeoutMs?:number};
 const CatalogSchema = z.object({models:z.array(z.object({slug:z.string().min(1),display_name:z.string().min(1),visibility:z.string()}))});
 const MessageSchema = z.array(z.object({role:z.enum(['developer','user','assistant']),content:z.string().min(1).max(100000)}).strict()).min(1).max(100);
 
@@ -23,11 +24,16 @@ export class ModelService {
   private blockedAccount:string|null = null;
   private blockedError:IntegrationError|null = null;
   private readonly onUsage:ModelOptions['onUsage'];
+  private readonly progress=new ModelProgressTracker();
+  private readonly requestTimeoutMs:number;
   constructor(private readonly auth:AuthManager,options:ModelOptions = {}) {
     this.network = options.fetch || fetch; this.settingsFile = options.settingsFile || join(auth.credentialDir,'model-selection.json');
     this.onUsage = options.onUsage;
+    this.requestTimeoutMs=options.requestTimeoutMs??180000;
+    if(!Number.isSafeInteger(this.requestTimeoutMs)||this.requestTimeoutMs<1||this.requestTimeoutMs>2_147_483_647)throw new Error('Invalid model request timeout.');
   }
   get selectedModel() { return this.selected; }
+  getRequestProgress() {return this.progress.list(this.auth.status().planAuthorized?this.auth.accountKey():null);}
   /** A new explicit user retry may probe the upstream quota again. */
   resetFailurePause() { this.blockedAccount = null; this.blockedError = null; }
   private async loadSettings() {
@@ -83,12 +89,15 @@ export class ModelService {
     if (!selected || !this.choices.some(x => x.id === selected)) throw new IntegrationError(400,'MODEL_UNAVAILABLE','没有选择当前账号可用的模型，请在设置中刷新并选择模型。');
     if (account !== this.auth.accountKey()) throw new IntegrationError(409,'AUTH_CHANGED','ChatGPT 账号已切换，请重新发起操作。');
     const attemptId = randomUUID(); const occurredAt = new Date().toISOString();
+    const signal=AbortSignal.timeout(this.requestTimeoutMs);
+    this.progress.start(attemptId,selected,account,this.requestTimeoutMs);
     let responseId:string|undefined;
     let usage = parseReportedTokenUsage(undefined); let succeeded = false;
     try {
     // Only documented plan-usage fields are sent. History is included explicitly.
     const response = await this.request('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json',Accept:'text/event-stream'},
-      body:JSON.stringify({model:selected,input,store:false,stream:true})},180000,'model-request',selected);
+      body:JSON.stringify({model:selected,input,store:false,stream:true})},this.requestTimeoutMs,'model-request',selected,signal);
+    this.progress.headers(attemptId,response.status);
     if (!response.ok) throw await this.responseError(response,'model-request',selected);
     const metadata = ():IntegrationDiagnostics => ({...responseDiagnostics(response,'model-stream'),responseId,model:selected});
     const failure = (status:number,code:string,message:string,extra:IntegrationDiagnostics = {}) => new IntegrationError(status,code,message,{...metadata(),...extra});
@@ -123,13 +132,19 @@ export class ModelService {
       const eventResponseId = responseData?.id || event.response_id;
       if(typeof eventResponseId === 'string') responseId = safeDiagnosticText(eventResponseId,200);
       const eventType = event.type;
+      this.progress.event(attemptId,eventType);
+      const outputIndex=typeof event.output_index==='number'&&Number.isInteger(event.output_index)?event.output_index:0;
+      const contentIndex=typeof event.content_index==='number'&&Number.isInteger(event.content_index)?event.content_index:0;
       if (eventType === 'response.completed' || eventType === 'response.failed' || eventType === 'response.incomplete' || eventType === 'error') {
         usage = parseReportedTokenUsage(responseData?.usage ?? event.usage);
       }
       if (eventType === 'response.output_text.delta') {
         if (typeof event.delta !== 'string') throw failure(502,'MODEL_STREAM_INVALID','模型文本片段格式无效。');
         accumulated += event.delta;
+        this.progress.text(attemptId,outputIndex,contentIndex,event.delta.length,true);
         if (accumulated.length > 500000) throw failure(502,'MODEL_OUTPUT_TOO_LARGE','模型输出超过本地允许长度，结果未保存。');
+      } else if (eventType === 'response.output_text.done') {
+        if(typeof event.text==='string')this.progress.text(attemptId,outputIndex,contentIndex,event.text.length,false);
       } else if (eventType === 'response.output_item.done') {
         const item = event.item as {id?:unknown;type?:unknown;status?:unknown;role?:unknown;content?:unknown} | undefined;
         if (!item || item.type !== 'message') return;
@@ -139,10 +154,11 @@ export class ModelService {
           throw failure(502,'MODEL_STREAM_INVALID','模型最终消息格式无效，结果未保存为完成。');
         }
         const parts:string[] = [];
-        for (const part of item.content) {
+        for (const [partIndex,part] of item.content.entries()) {
           if (part && typeof part === 'object' && part.type === 'output_text') {
             if (typeof part.text !== 'string') throw failure(502,'MODEL_STREAM_INVALID','模型最终文本格式无效。');
             parts.push(part.text);
+            this.progress.text(attemptId,index,partIndex,part.text.length,false);
           }
         }
         const text = parts.join(''); const previous = completedItems.get(index);
@@ -169,11 +185,11 @@ export class ModelService {
         const completed = event.response as {status?:string;output?:unknown} | undefined;
         if (!completed || completed.status !== 'completed' || !Array.isArray(completed.output)) throw failure(502,'MODEL_COMPLETION_INVALID','模型完成事件格式无效，结果未保存为完成。');
         const texts:string[] = [];
-        for (const output of completed.output) {
+        for (const [outputIndex,output] of completed.output.entries()) {
           if (!output || typeof output !== 'object') continue;
           const item = output as {type?:string;content?:unknown};
           if (item.type !== 'message' || !Array.isArray(item.content)) continue;
-          for (const part of item.content) if (part && typeof part === 'object' && part.type === 'output_text' && typeof part.text === 'string') texts.push(part.text);
+          for (const [partIndex,part] of item.content.entries()) if (part && typeof part === 'object' && part.type === 'output_text' && typeof part.text === 'string') {texts.push(part.text);this.progress.text(attemptId,outputIndex,partIndex,part.text.length,false);}
         }
         // Some plan streams omit repeated items from the terminal response.
         // Use only completed output_item.done messages, never partial deltas,
@@ -195,6 +211,7 @@ export class ModelService {
           break;
         }
         totalBytes += chunk.value.byteLength;
+        this.progress.bytes(attemptId,chunk.value.byteLength);
         if (totalBytes > 8*1024*1024) throw failure(502,'MODEL_OUTPUT_TOO_LARGE','模型事件流超过本地允许大小。');
         buffer += decoder.decode(chunk.value,{stream:true}); buffer = buffer.replace(/\r\n/g,'\n');
         verifyFraming();
@@ -205,11 +222,25 @@ export class ModelService {
       }
       if (account !== this.auth.accountKey() || !this.auth.status().planAuthorized) throw failure(409,'AUTH_CHANGED','ChatGPT 连接在请求期间已更改，结果未保存为完成。');
       succeeded = true;
+      this.progress.finish(attemptId,'completed');
       return result!;
     } catch(error) {
       if (error instanceof IntegrationError) throw error;
       throw failure(502,'MODEL_STREAM_INTERRUPTED','读取 OpenAI 模型事件流时连接中断，未完成的内容不会保存为成功结果。',networkDiagnostics(error,'model-stream-read'));
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+    } catch(error) {
+      const original=error instanceof IntegrationError?error:new IntegrationError(502,'MODEL_STREAM_INTERRUPTED','读取 OpenAI 模型事件流时连接中断，未完成的内容不会保存为成功结果。',networkDiagnostics(error,'model-stream-read'));
+      const before=this.progress.snapshot(attemptId);
+      const timeoutTransport=['OPENAI_NETWORK_ERROR','MODEL_STREAM_INTERRUPTED','OPENAI_RESPONSE_INTERRUPTED'].includes(original.code)&&['TimeoutError','AbortError'].includes(original.diagnostics.networkCode||'');
+      const timedOut=signal.aborted&&signal.reason?.name==='TimeoutError'&&timeoutTransport;
+      const code=timedOut?'MODEL_REQUEST_TIMEOUT':original.code;
+      const reason=timedOut?'total_timeout':original.diagnostics.reason;
+      this.progress.finish(attemptId,'failed',code,reason);
+      const progress=this.progress.snapshot(attemptId);
+      const seconds=Math.round(this.requestTimeoutMs/1000);
+      const observed=!before?.headersAt?'尚未收到 HTTP 响应':!before.eventCount?'已收到 HTTP 响应，但未收到模型事件':!before.textCharacters?'已收到模型事件，但未收到答案正文':'已收到部分答案正文，但未收到完成事件';
+      throw new IntegrationError(timedOut?504:original.status,code,timedOut?`模型请求达到 ${seconds} 秒总等待上限；${observed}。未完成内容不会保存为成功结果。`:original.publicMessage,
+        {...original.diagnostics,...(before?.httpStatus?{upstreamStatus:before.httpStatus}:{}),...(timedOut?{reason,stage:before?.headersAt?'model-stream-read':'model-request'}:{}),...(progress?{progress}:{})});
     } finally {
       // Counts are optional telemetry. A broken observer cannot alter inference.
       try {
@@ -218,8 +249,8 @@ export class ModelService {
       } catch { /* Preserve the model result or original failure. */ }
     }
   }
-  private async request(url:string,init:RequestInit,timeout:number,stage:string,model?:string) {
-    try {return await this.network(url,{...init,redirect:'error',signal:AbortSignal.timeout(timeout)});}
+  private async request(url:string,init:RequestInit,timeout:number,stage:string,model?:string,signal=AbortSignal.timeout(timeout)) {
+    try {return await this.network(url,{...init,redirect:'error',signal});}
     catch(error) {throw new IntegrationError(503,'OPENAI_NETWORK_ERROR','连接 OpenAI 模型服务失败，尚未收到 HTTP 响应。请查看网络错误详情。',{...networkDiagnostics(error,stage),model});}
   }
   private async responseError(response:Response,stage:string,model?:string) {

@@ -58,6 +58,7 @@ export function createApplication(config: ReturnType<typeof getConfig>, db: Data
     }
   });
   app.get('/api/models', async (_req, res) => res.json(await model.listModels()));
+  app.get('/api/ai/progress', (_req, res) => res.json(model.getRequestProgress()));
   app.get('/api/token-usage', (req, res) => res.json(tokenUsage.list(req.query)));
   app.put('/api/models', async (req, res) => {
     const { model: selection } = z.object({ model: z.string().min(1).max(200) }).parse(req.body);

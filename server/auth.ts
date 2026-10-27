@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRemoteJWKSet, customFetch, jwtVerify, type JWTPayload } from 'jose';
 import { z } from 'zod';
+import type { ModelRequestProgress } from './model-progress.js';
 
 const ISSUER = 'https://auth.openai.com';
 const RESOURCE = 'https://api.openai.com/v1';
@@ -14,6 +15,7 @@ export const USAGE_URL = 'https://chatgpt.com/settings/usage';
 export type IntegrationDiagnostics = {
   requestId?: string; param?: string; bodyShape?: string; detail?: string;
   upstreamStatus?: number; upstreamMessage?: string; stage?: string; networkCode?: string; responseId?: string; reason?: string; model?: string;
+  progress?: ModelRequestProgress;
 };
 
 /** Keep useful official/network text, but never retain credentials or URL queries. */

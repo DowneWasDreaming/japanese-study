@@ -1,5 +1,6 @@
 import { AnnotationQuickAdd, AnnotationsProvider, ExamAnnotationsPanel, MarkableText, SubmitAnnotationChoice, protectOptionTextSelection, useExamAnnotations, type ExamAnnotation } from './ExamAnnotations';
 import { AIDiagnosticsPage, DiagnosticsLink } from './AIDiagnostics';
+import { AIRequestProgress } from './AIRequestProgress';
 import { ExamDiscussion } from './ExamDiscussion';
 import { TokenUsagePage } from './TokenUsage';
 import { ReviewPage, type ReviewFrozenPoint } from './ReviewPage';
@@ -101,6 +102,7 @@ export default function App() {
     </aside>
     <div className="main-shell"><header className="topbar"><div className="topbar-left"><button className="mobile-menu icon-button" aria-label="打开导航" onClick={() => setMenuOpen(!menuOpen)}><Menu size={22} /></button><span>我的日语学习手帐</span><span className="topbar-divider" /><span className="topbar-ja" lang="ja">今日も、一歩ずつ。</span></div><a href="#settings" className="connection-chip"><span className={`status-dot ${auth.data?.planAuthorized ? 'connected' : ''}`} /><span>{auth.data?.planAuthorized ? 'ChatGPT 已授权' : auth.data?.connected ? '已登录 · 待套餐授权' : '连接 ChatGPT'}</span><ChevronRight size={14} /></a></header>
     <main className="main-content">
+      <AIRequestProgress />
       {tab === 'dashboard' && <DashboardPage notify={setToast} />}
       {tab === 'library' && <LibraryPage notify={setToast} />}
       {tab === 'explain' && <ExplainPage notify={setToast} />}

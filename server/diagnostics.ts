@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { modelRequestProgressSchema,type ModelRequestProgress } from './model-progress.js';
 
 export const failureOperations=['generate','grade','annotation','review','explain','followup','models','connection','auth'] as const;
 export const failureCategories=['network','upstream','validation','permission','quota','interrupted','local'] as const;
@@ -50,7 +51,21 @@ export function validateFailureRecord(input:unknown):FailureRow {
   for(const key of ['request_id','model','stage','network_code','response_id'] as const)if(row[key]!==null&&token(row[key],key==='request_id'||key==='response_id'?300:200)!==row[key])throw new Error('诊断标识字段无效');
   return row;
 }
-export function failureDto(row:FailureRow) {return {id:row.id,createdAt:row.created_at,operation:row.operation,category:row.category,code:row.code,message:row.message,httpStatus:row.http_status,upstreamStatus:row.upstream_status,requestId:row.request_id,upstreamMessage:row.upstream_message,detail:row.detail,examId:row.exam_id,questionId:row.question_id,conversationId:row.conversation_id,annotationIds:JSON.parse(row.annotation_ids_json) as string[],model:row.model,source:row.source,stage:row.stage,networkCode:row.network_code,responseId:row.response_id};}
+const progressPrefix='stream_progress_v1: ';
+/** Progress lives in the versioned detail field so old backups keep working.
+ * Parse only the bounded metadata schema; never accept arbitrary stream data. */
+export function progressFromFailureDetail(detail:string|null):ModelRequestProgress|null {
+  const line=detail?.split('\n').findLast(value=>value.startsWith(progressPrefix));
+  if(!line||line.length>3000)return null;
+  try {const parsed=modelRequestProgressSchema.safeParse(JSON.parse(line.slice(progressPrefix.length)));return parsed.success?parsed.data:null;}catch{return null;}
+}
+function progressDetail(value:unknown):string|null {
+  const parsed=modelRequestProgressSchema.safeParse(value);if(!parsed.success)return null;
+  const serialized=JSON.stringify(parsed.data);
+  if(serialized.length>2800||redactFailureText(serialized,2800)!==serialized)return null;
+  return progressPrefix+serialized;
+}
+export function failureDto(row:FailureRow) {return {id:row.id,createdAt:row.created_at,operation:row.operation,category:row.category,code:row.code,message:row.message,httpStatus:row.http_status,upstreamStatus:row.upstream_status,requestId:row.request_id,upstreamMessage:row.upstream_message,detail:row.detail,progress:progressFromFailureDetail(row.detail),examId:row.exam_id,questionId:row.question_id,conversationId:row.conversation_id,annotationIds:JSON.parse(row.annotation_ids_json) as string[],model:row.model,source:row.source,stage:row.stage,networkCode:row.network_code,responseId:row.response_id};}
 
 export class FailureDiagnostics {
   constructor(private readonly db:DatabaseSync){this.importLegacy();}
@@ -72,7 +87,9 @@ export class FailureDiagnostics {
     const message=redactFailureText(value.publicMessage??(!isZod?value.message:undefined),3000)
       ||(isZod?'GPT 返回内容未通过结构校验，具体字段见诊断详情。':upstreamStatus?'GPT 服务返回错误，详见官方错误信息。':networkCode?'连接 GPT 服务失败，详见网络错误码。':'请求未完成，服务未提供可公开的进一步错误信息。');
     const validation=isZod?error.issues.map(issue=>`${issue.path.join('.')||'(根)'}: ${issue.code}${issue.code==='invalid_type'?`; expected ${String(issue.expected)}; received type ${String(issue.received)}`:issue.code==='too_small'?`; minimum ${String(issue.minimum)}; inclusive ${String(issue.inclusive)}; type ${issue.type}`:issue.code==='too_big'?`; maximum ${String(issue.maximum)}; inclusive ${String(issue.inclusive)}; type ${issue.type}`:issue.code==='unrecognized_keys'?'; 返回了约定之外的字段':issue.code==='invalid_enum_value'?'; 值不在允许的枚举中':issue.code==='custom'?'; 字段未通过约束检查':''}`).join('\n'):null;
-    const extra=[validation,redactFailureText(diagnostics.detail??value.detail,6000),token(diagnostics.reason??value.reason)?`reason: ${token(diagnostics.reason??value.reason)}`:null,token(diagnostics.param??value.param)?`param: ${token(diagnostics.param??value.param)}`:null,redactFailureText(diagnostics.bodyShape??value.bodyShape,1000)].filter(Boolean).join('\n')||null;
+    const progress=progressDetail(diagnostics.progress);
+    const causes=[validation,redactFailureText(diagnostics.detail??value.detail,6000),token(diagnostics.reason??value.reason)?`reason: ${token(diagnostics.reason??value.reason)}`:null,token(diagnostics.param??value.param)?`param: ${token(diagnostics.param??value.param)}`:null,redactFailureText(diagnostics.bodyShape??value.bodyShape,1000)].filter(Boolean).join('\n');
+    const extra=[causes.slice(0,progress?8000-progress.length-1:8000),progress].filter(Boolean).join('\n')||null;
     const row:FailureRow={id:context.id||randomUUID(),created_at:context.createdAt||new Date().toISOString(),operation:context.operation,category:classifyFailure(code,upstreamStatus,networkCode),code,message,http_status:numberStatus(value.status??value.statusCode),upstream_status:upstreamStatus,request_id:token(diagnostics.requestId??value.requestId,300),upstream_message:redactFailureText(diagnostics.upstreamMessage??value.upstreamMessage,5000),detail:redactFailureText(extra,8000),exam_id:context.examId||null,question_id:context.questionId||null,conversation_id:context.conversationId||null,annotation_ids_json:JSON.stringify(context.annotationIds||[]),model:token(context.model||diagnostics.model||value.model),source:context.source||'live',stage:token(context.stage??diagnostics.stage??value.stage),network_code:networkCode,response_id:token(diagnostics.responseId??value.responseId,300)};
     // A stale link must not hide the original error behind a foreign-key error.
     const exam=row.exam_id?this.db.prepare('SELECT questions_json FROM exams WHERE id=?').get(row.exam_id):null;

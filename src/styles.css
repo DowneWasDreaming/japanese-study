@@ -606,6 +606,36 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--green); }
 .diagnostics-official { border-top: 1px solid var(--line); padding-top: 18px; line-height: 2; }
 .diagnostics-official .text-button { margin-left: 8px; }
 .annotation-failure-detail .diagnostics-link { font-size: 10px; }
+.ai-request-progress { padding: 21px 24px; margin-bottom: 24px; border-color: color-mix(in srgb, var(--green) 32%, var(--line)); min-width: 0; }
+.ai-progress-heading, .ai-progress-title { display: flex; align-items: center; flex-wrap: wrap; gap: 9px 15px; justify-content: space-between; }
+.ai-progress-heading { margin-bottom: 17px; }
+.ai-progress-heading h2 { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 500; }
+.ai-progress-heading > span, .ai-progress-footnote { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--muted); }
+.ai-request-progress-summary { min-width: 0; }
+.ai-request-progress-summary + .ai-request-progress-summary { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
+.ai-progress-title strong { font-size: 13px; font-weight: 500; color: var(--green); }
+.ai-progress-title > span { font-size: 10px; color: var(--muted); overflow-wrap: anywhere; }
+.ai-progress-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 14px 0 12px; padding: 15px; border-radius: 5px; background: var(--soft); }
+.ai-progress-metrics > div { min-width: 0; }
+.ai-progress-metrics dt { font-size: 10px; color: var(--muted); margin-bottom: 6px; }
+.ai-progress-metrics dd { margin: 0; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.ai-progress-metrics small { display: block; color: var(--muted); font-size: 10px; }
+.ai-progress-last { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 11px; color: var(--muted); line-height: 1.8; }
+.ai-progress-caveat { color: var(--muted); font-size: 10px; line-height: 1.9; margin-top: 9px; }
+.ai-progress-details { margin-top: 12px; }
+.ai-progress-details summary { cursor: pointer; color: var(--green); font-size: 11px; line-height: 1.8; }
+.ai-progress-details dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px 18px; margin: 12px 0; padding: 14px; border: 1px solid var(--line); border-radius: 4px; }
+.ai-progress-details dl > div { min-width: 0; }
+.ai-progress-details dt { color: var(--muted); font-size: 10px; margin-bottom: 4px; }
+.ai-progress-details dd { margin: 0; font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
+.ai-progress-details code { font-family: Consolas, monospace; font-size: 10px; }
+.ai-progress-footnote { margin-top: 14px; line-height: 1.8; align-items: flex-start; }
+.ai-progress-footnote svg { flex-shrink: 0; margin-top: 3px; }
+.ai-progress-refresh-error { background: var(--soft); color: var(--red); padding: 10px 12px; font-size: 11px; line-height: 1.8; margin-bottom: 14px; border-radius: 4px; }
+.diagnostic-progress { margin: 17px 0 14px; padding: 16px; border: 1px solid var(--line); border-radius: 5px; }
+.diagnostic-progress > h3 { font-size: 11px; color: var(--muted); font-weight: 400; margin-bottom: 12px; }
+@media (max-width: 950px) { .ai-progress-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 540px) { .ai-request-progress { padding: 17px; } .ai-progress-metrics { padding: 12px; gap: 13px 10px; } .ai-progress-metrics dd { font-size: 11px; } .ai-progress-details dl { grid-template-columns: 1fr; } .diagnostic-progress { padding: 13px; } }
 
 /* Free-form questions stay beside the exercise they discuss. */
 .exam-discussion { margin-top: 25px; border: 1px solid var(--line); border-radius: 7px; min-width: 0; background: var(--panel); }
