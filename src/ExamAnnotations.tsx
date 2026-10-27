@@ -5,7 +5,7 @@ import { DiagnosticsLink } from './AIDiagnostics';
 import { useReviewCapture } from './ReviewCapture';
 
 export type AnnotationSource = 'prompt' | 'passage' | 'option';
-export type AnnotationQuestion = { id: string; prompt: string; passage?: string; options?: { id: string; text: string }[] };
+export type AnnotationQuestion = { id: string; prompt: string; passage?: string; options?: { id: string; text: string }[]; readingGroup?: { id: string; title: string } };
 export type ExamAnnotation = {
   id: string; questionId: string; source: AnnotationSource; optionId?: string | null;
   start: number; end: number; text: string; status: 'marked' | 'pending' | 'completed' | 'failed';
@@ -185,7 +185,13 @@ export function protectOptionTextSelection(event: MouseEvent<HTMLElement>) {
 
 export function MarkableText({ questionId, source, optionId, text }: { questionId: string; source: AnnotationSource; optionId?: string; text: string }) {
   const context = useAnnotations();
-  const items = context.items.filter(item => item.questionId === questionId && item.source === source && (item.optionId || undefined) === optionId);
+  const question = context.questions.find(item => item.id === questionId);
+  // Passage marks made through any subquestion share the same displayed text.
+  // Their saved owners remain untouched for removal, explanation and review.
+  const materialOwners = source === 'passage' && question?.readingGroup
+    ? new Set(context.questions.filter(item => item.readingGroup?.id === question.readingGroup!.id && item.passage === text).map(item => item.id))
+    : new Set([questionId]);
+  const items = context.items.filter(item => materialOwners.has(item.questionId) && item.source === source && (item.optionId || undefined) === optionId);
   const segments = highlightTextSegments(text, items);
   return <span className="markable-text" data-mark-exam={context.examId} data-mark-question={questionId} data-mark-source={source} {...(optionId ? { 'data-mark-option': optionId } : {})}>{segments.map(segment => segment.ids.length ? <mark key={segment.start} className={'annotation-highlight' + (segment.ids.length > 1 ? ' overlapping' : '')} title={segment.ids.length > 1 ? '这里有 ' + segment.ids.length + ' 处标记' : '已标记，交卷后解析'}>{segment.text}</mark> : segment.text)}</span>;
 }
@@ -217,8 +223,9 @@ function AnnotationCard({ item, showExplanation }: { item: ExamAnnotation; showE
   const context = useAnnotations();
   const { openCapture } = useReviewCapture();
   const number = context.questions.findIndex(question => question.id === item.questionId) + 1;
+  const group = context.questions.find(question => question.id === item.questionId)?.readingGroup;
   const explanation = showExplanation && item.status === 'completed' ? item.explanation : null;
-  return <article className={'annotation-card status-' + item.status}><div className="annotation-card-top"><span>第 {number} 题 · {sourceNames[item.source]}{item.source === 'option' ? ' ' + (item.optionId || '').toUpperCase() : ''}</span><span>{showExplanation ? statusNames[item.status] : '交卷后解析'}</span><button type="button" className="icon-button delete-button" disabled={context.disabled} aria-label={'移除标记：' + item.text} onClick={() => void context.remove(item.id)}><Trash2 size={15} /></button></div><blockquote lang="ja">{item.text}</blockquote><button type="button" className="text-button annotation-to-review" disabled={context.disabled} onClick={() => openCapture({ examId: context.examId, questionId: item.questionId, source: item.source, optionId: item.optionId, start: item.start, end: item.end, text: item.text, submitted: context.submitted })}><BookMarked size={13} />加入重点复习</button>{explanation && <div className="annotation-explanation">{explanation.reading && <div><h4>读音</h4><p lang="ja">{explanation.reading}</p></div>}<div><h4>这里的意思</h4><p>{explanation.meaning}</p></div><div><h4>结合题目理解</h4><p>{explanation.analysis}</p></div>{explanation.examples.length > 0 && <div><h4>再看一个例子</h4>{explanation.examples.map((example, index) => <div className="annotation-example" key={index}><p lang="ja">{example.ja}</p><p>{example.zh}</p></div>)}</div>}{explanation.tip && <div><h4>记忆提示</h4><p>{explanation.tip}</p></div>}<span className="annotation-completed"><CheckCircle2 size={13} />AI 解析已保存在本机</span></div>}{showExplanation && item.status === 'failed' && <div className="annotation-failure-detail"><p className="annotation-inline-warning">{item.error || '这处解析没有完成，具体原因见失败记录。'} 成绩不受影响。</p><DiagnosticsLink examId={context.examId} operation="annotation">查看每次解析失败的详细记录</DiagnosticsLink></div>}{showExplanation && item.status === 'pending' && <p className="small-muted"><Clock3 size={13} />解析尚未完成，稍后可刷新查看。</p>}</article>;
+  return <article className={'annotation-card status-' + item.status}><div className="annotation-card-top"><span>{item.source === 'passage' && group ? '共享材料 · ' + group.title : '第 ' + number + ' 题 · ' + sourceNames[item.source]}{item.source === 'option' ? ' ' + (item.optionId || '').toUpperCase() : ''}</span><span>{showExplanation ? statusNames[item.status] : '交卷后解析'}</span><button type="button" className="icon-button delete-button" disabled={context.disabled} aria-label={'移除标记：' + item.text} onClick={() => void context.remove(item.id)}><Trash2 size={15} /></button></div><blockquote lang="ja">{item.text}</blockquote><button type="button" className="text-button annotation-to-review" disabled={context.disabled} onClick={() => openCapture({ examId: context.examId, questionId: item.questionId, source: item.source, optionId: item.optionId, start: item.start, end: item.end, text: item.text, submitted: context.submitted })}><BookMarked size={13} />加入重点复习</button>{explanation && <div className="annotation-explanation">{explanation.reading && <div><h4>读音</h4><p lang="ja">{explanation.reading}</p></div>}<div><h4>这里的意思</h4><p>{explanation.meaning}</p></div><div><h4>结合题目理解</h4><p>{explanation.analysis}</p></div>{explanation.examples.length > 0 && <div><h4>再看一个例子</h4>{explanation.examples.map((example, index) => <div className="annotation-example" key={index}><p lang="ja">{example.ja}</p><p>{example.zh}</p></div>)}</div>}{explanation.tip && <div><h4>记忆提示</h4><p>{explanation.tip}</p></div>}<span className="annotation-completed"><CheckCircle2 size={13} />AI 解析已保存在本机</span></div>}{showExplanation && item.status === 'failed' && <div className="annotation-failure-detail"><p className="annotation-inline-warning">{item.error || '这处解析没有完成，具体原因见失败记录。'} 成绩不受影响。</p><DiagnosticsLink examId={context.examId} operation="annotation">查看每次解析失败的详细记录</DiagnosticsLink></div>}{showExplanation && item.status === 'pending' && <p className="small-muted"><Clock3 size={13} />解析尚未完成，稍后可刷新查看。</p>}</article>;
 }
 
 export function SubmitAnnotationChoice({ checked, onChange, disabled }: { checked: boolean; onChange: (value: boolean) => void; disabled: boolean }) {

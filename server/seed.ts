@@ -7,6 +7,7 @@ export interface Question {
   id: string; type: QuestionType; level: string; category: string; prompt: string;
   originId?: string;
   reviewPointIds?: string[];
+  readingGroup?: { id: string; title: string; kind: 'short' | 'medium' | 'long' | 'integrated' | 'information' };
   passage?: string; options?: { id: string; text: string }[]; answer: string;
   acceptedAnswers: string[]; explanation: string; knowledgePoints: string[];
   points: number; rubric: string; source?: string;
