@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { modelRequestProgressSchema,type ModelRequestProgress } from './model-progress.js';
+import { reviewEvidenceFailureFromDetail,reviewEvidenceFailurePrefix,reviewEvidenceFailureSchema } from './review-evidence-diagnostics.js';
 
 export const failureOperations=['generate','grade','annotation','review','explain','followup','models','connection','auth'] as const;
 export const failureCategories=['network','upstream','validation','permission','quota','interrupted','local'] as const;
@@ -34,12 +35,23 @@ export function redactFailureText(value:unknown,max:number):string|null {
 }
 const token=(value:unknown,max=200)=>typeof value==='string'&&/^[A-Za-z0-9_.:/-]+$/.test(value)?value.slice(0,max):null;
 const numberStatus=(value:unknown)=>typeof value==='number'&&Number.isInteger(value)&&value>=100&&value<=599?value:null;
+function evidenceDetail(value:string):string {
+  // Do not retain arbitrary response/userAnswer fields hidden beside an envelope.
+  const parsed=value.trim().split('\n').length===1?reviewEvidenceFailureFromDetail(value.trim()):null;
+  if(!parsed)return '原文证据诊断结构无效，未保存额外正文。';
+  const sanitized=reviewEvidenceFailureSchema.parse({...parsed,
+    pointId:redactFailureText(parsed.pointId,200)||'[标识已隐藏]',
+    quoteExcerpt:redactFailureText(parsed.quoteExcerpt,1000)||'',
+    closestSource:parsed.closestSource?{...parsed.closestSource,label:redactFailureText(parsed.closestSource.label,80)||'原文',excerpt:redactFailureText(parsed.closestSource.excerpt,1000)||''}:null,
+  });
+  return reviewEvidenceFailurePrefix+JSON.stringify(sanitized);
+}
 export function classifyFailure(code:string,upstreamStatus:number|null,networkCode:string|null):Category {
   if(networkCode||/NETWORK|TIMEOUT|FETCH_FAILED|ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|UND_ERR/i.test(code))return 'network';
   if(/INCOMPLETE|INTERRUPTED|ABORTED|RECOVERY/i.test(code))return 'interrupted';
   if(/QUOTA|LIMIT_EXCEEDED|REQUEST_LIMIT|RATE_LIMIT|usage_limit|insufficient_quota/i.test(code)||upstreamStatus===429)return 'quota';
   if(/AUTH|PERMISSION|DENIED|eligible|TOKEN|OAUTH|invalid_grant|invalid_client|CHATGPT_NOT_CONNECTED/i.test(code)||upstreamStatus===401||upstreamStatus===403)return 'permission';
-  if(/INVALID.*(?:OUTPUT|MODEL|ANNOTATION)|MODEL_(?:OUTPUT|STREAM|COMPLETION|CATALOG)_INVALID|MODEL_OUTPUT_TOO_LARGE|DUPLICATE_AI_QUESTION|ZOD|VALIDATION/i.test(code))return 'validation';
+  if(/INVALID.*(?:OUTPUT|MODEL|ANNOTATION)|INVALID_REVIEW_EVIDENCE|MODEL_(?:OUTPUT|STREAM|COMPLETION|CATALOG)_INVALID|MODEL_OUTPUT_TOO_LARGE|DUPLICATE_AI_QUESTION|ZOD|VALIDATION/i.test(code))return 'validation';
   return upstreamStatus?'upstream':'local';
 }
 export function validateFailureRecord(input:unknown):FailureRow {
@@ -48,6 +60,7 @@ export function validateFailureRecord(input:unknown):FailureRow {
   if(new Set(ids).size!==ids.length)throw new Error('重复标记引用');
   if(row.question_id&&!row.exam_id)throw new Error('题目诊断缺少试卷');
   for(const key of ['message','upstream_message','detail'] as const)if(row[key]!==null&&redactFailureText(row[key],key==='message'?3000:key==='upstream_message'?5000:8000)!==row[key])throw new Error('诊断含未脱敏内容');
+  if(row.detail?.includes(reviewEvidenceFailurePrefix)&&!reviewEvidenceFailureFromDetail(row.detail))throw new Error('原文证据诊断结构无效。');
   for(const key of ['request_id','model','stage','network_code','response_id'] as const)if(row[key]!==null&&token(row[key],key==='request_id'||key==='response_id'?300:200)!==row[key])throw new Error('诊断标识字段无效');
   return row;
 }
@@ -65,7 +78,7 @@ function progressDetail(value:unknown):string|null {
   if(serialized.length>2800||redactFailureText(serialized,2800)!==serialized)return null;
   return progressPrefix+serialized;
 }
-export function failureDto(row:FailureRow) {return {id:row.id,createdAt:row.created_at,operation:row.operation,category:row.category,code:row.code,message:row.message,httpStatus:row.http_status,upstreamStatus:row.upstream_status,requestId:row.request_id,upstreamMessage:row.upstream_message,detail:row.detail,progress:progressFromFailureDetail(row.detail),examId:row.exam_id,questionId:row.question_id,conversationId:row.conversation_id,annotationIds:JSON.parse(row.annotation_ids_json) as string[],model:row.model,source:row.source,stage:row.stage,networkCode:row.network_code,responseId:row.response_id};}
+export function failureDto(row:FailureRow) {return {id:row.id,createdAt:row.created_at,operation:row.operation,category:row.category,code:row.code,message:row.message,httpStatus:row.http_status,upstreamStatus:row.upstream_status,requestId:row.request_id,upstreamMessage:row.upstream_message,detail:row.detail,progress:progressFromFailureDetail(row.detail),evidenceFailure:reviewEvidenceFailureFromDetail(row.detail),examId:row.exam_id,questionId:row.question_id,conversationId:row.conversation_id,annotationIds:JSON.parse(row.annotation_ids_json) as string[],model:row.model,source:row.source,stage:row.stage,networkCode:row.network_code,responseId:row.response_id};}
 
 export class FailureDiagnostics {
   constructor(private readonly db:DatabaseSync){this.importLegacy();}
@@ -88,7 +101,9 @@ export class FailureDiagnostics {
       ||(isZod?'GPT 返回内容未通过结构校验，具体字段见诊断详情。':upstreamStatus?'GPT 服务返回错误，详见官方错误信息。':networkCode?'连接 GPT 服务失败，详见网络错误码。':'请求未完成，服务未提供可公开的进一步错误信息。');
     const validation=isZod?error.issues.map(issue=>`${issue.path.join('.')||'(根)'}: ${issue.code}${issue.code==='invalid_type'?`; expected ${String(issue.expected)}; received type ${String(issue.received)}`:issue.code==='too_small'?`; minimum ${String(issue.minimum)}; inclusive ${String(issue.inclusive)}; type ${issue.type}`:issue.code==='too_big'?`; maximum ${String(issue.maximum)}; inclusive ${String(issue.inclusive)}; type ${issue.type}`:issue.code==='unrecognized_keys'?'; 返回了约定之外的字段':issue.code==='invalid_enum_value'?'; 值不在允许的枚举中':issue.code==='custom'?'; 字段未通过约束检查':''}`).join('\n'):null;
     const progress=progressDetail(diagnostics.progress);
-    const causes=[validation,redactFailureText(diagnostics.detail??value.detail,6000),token(diagnostics.reason??value.reason)?`reason: ${token(diagnostics.reason??value.reason)}`:null,token(diagnostics.param??value.param)?`param: ${token(diagnostics.param??value.param)}`:null,redactFailureText(diagnostics.bodyShape??value.bodyShape,1000)].filter(Boolean).join('\n');
+    const rawDetail=diagnostics.detail??value.detail;
+    const detail=typeof rawDetail==='string'&&rawDetail.includes(reviewEvidenceFailurePrefix)?evidenceDetail(rawDetail):redactFailureText(rawDetail,6000);
+    const causes=[validation,detail,token(diagnostics.reason??value.reason)?`reason: ${token(diagnostics.reason??value.reason)}`:null,token(diagnostics.param??value.param)?`param: ${token(diagnostics.param??value.param)}`:null,redactFailureText(diagnostics.bodyShape??value.bodyShape,1000)].filter(Boolean).join('\n');
     const extra=[causes.slice(0,progress?8000-progress.length-1:8000),progress].filter(Boolean).join('\n')||null;
     const row:FailureRow={id:context.id||randomUUID(),created_at:context.createdAt||new Date().toISOString(),operation:context.operation,category:classifyFailure(code,upstreamStatus,networkCode),code,message,http_status:numberStatus(value.status??value.statusCode),upstream_status:upstreamStatus,request_id:token(diagnostics.requestId??value.requestId,300),upstream_message:redactFailureText(diagnostics.upstreamMessage??value.upstreamMessage,5000),detail:redactFailureText(extra,8000),exam_id:context.examId||null,question_id:context.questionId||null,conversation_id:context.conversationId||null,annotation_ids_json:JSON.stringify(context.annotationIds||[]),model:token(context.model||diagnostics.model||value.model),source:context.source||'live',stage:token(context.stage??diagnostics.stage??value.stage),network_code:networkCode,response_id:token(diagnostics.responseId??value.responseId,300)};
     // A stale link must not hide the original error behind a foreign-key error.

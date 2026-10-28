@@ -7,6 +7,7 @@ import type { Question } from './seed.js';
 import { validateAnnotationAnchor } from './annotations.js';
 import { FailureDiagnostics,redactFailureText } from './diagnostics.js';
 import { assessmentSchema,parseVerification,reviewFingerprint,selectExistingUsages,verificationInstructions,type Verification } from './review-verification.js';
+import { createReviewEvidenceMatcher,evidenceFailureDetail,type EvidenceSource,type ContextOnlySource } from './review-evidence.js';
 
 const id=z.string().min(1).max(200),stamp=z.string().datetime(),level=z.enum(['KANA','N5','N4','N3','N2','N1']);
 const kind=z.enum(['word','grammar','expression']),scope=z.enum(['broad','context']);
@@ -104,7 +105,10 @@ export function validateReviewBackup(tables:{review_points:unknown[];review_sour
     const report=parseVerification(point.verification_json);if(!report)continue;
     const related=sources.filter(source=>resolveId(source.point_id)===resolveId(point.id));
     const evidencePool=[point.note,...related.flatMap(source=>{const q=source.exam_id?exams?.get(source.exam_id)?.find(q=>q.id===source.question_id):undefined;return [source.context,source.question_prompt,q?.passage||'',q?.prompt||'',...(q?.options?.map(option=>option.text)||[])];})];
-    if(report.evidence.some(quote=>!evidencePool.some(value=>value.includes(quote))))throw new ReviewError('知识点核查依据与保留原文不一致。','INVALID_REVIEW_RECORD');
+    const matchEvidence=createReviewEvidenceMatcher(evidencePool.map(text=>({label:'保留原文',text})));
+    // New checks save exact source slices. Imports must retain that invariant;
+    // historical exact quotations (including old note sources) stay compatible.
+    if(report.evidence.some(quote=>{const match=matchEvidence(quote);return !match.matched||match.text!==quote;}))throw new ReviewError('知识点核查依据与保留原文不一致。','INVALID_REVIEW_RECORD');
   }
   for(const source of sources)if(!ids.has(source.point_id))throw new ReviewError('复习来源的知识点不存在。','INVALID_REVIEW_SOURCE');
   for(const point of points)if(!sources.some(source=>source.point_id===point.id))throw new ReviewError('复习知识点缺少原始来源。','INVALID_REVIEW_RECORD');
@@ -263,11 +267,11 @@ export class ReviewService {
     if(!this.canAuditPoint(original))throw new ReviewError('原始标记已保存，请先交卷，再请 AI 整理或核查。','REVIEW_NOT_SUBMITTED',403);
     const sources=this.allSources(pointId),point={...original};
     const task=Promise.resolve().then(async()=>{
-      let stopBatchReason:string|undefined;
+      let stopBatchReason:string|undefined,model:string|undefined;
       try{
         point.normalization_status='pending';point.candidate_json=null;point.error=null;point.updated_at=this.now();this.save(point);
         if(!this.ai)throw new ReviewError('请先连接 ChatGPT 并授权套餐后整理知识点。','PLAN_PERMISSION_REQUIRED',403);
-        const source=sources.at(-1)!,examSource=sources.findLast(source=>source.exam_id);const model=examSource?.exam_id?JSON.parse(String(this.db.prepare('SELECT config_json FROM exams WHERE id=?').get(examSource.exam_id)!.config_json)).model:undefined;
+        const source=sources.at(-1)!,examSource=sources.findLast(source=>source.exam_id);model=examSource?.exam_id?JSON.parse(String(this.db.prepare('SELECT config_json FROM exams WHERE id=?').get(examSource.exam_id)!.config_json)).model:undefined;
         const contexts=sources.slice(-4).map(source=>this.sourcePayload(source));
         const neighbours=(this.db.prepare("SELECT * FROM review_points WHERE merged_into IS NULL AND usage_key<>'' AND id!=? ORDER BY updated_at DESC").all(pointId) as PointRow[]).filter(item=>!this.uncertain(item));
         const existingUsages=selectExistingUsages(neighbours,[point.title,...sources.slice(-4).map(source=>source.text)]);
@@ -276,12 +280,34 @@ export class ReviewService {
         let raw:unknown;try{raw=JSON.parse(output.trim().replace(/^\x60{3}(?:json)?\s*/i,'').replace(/\s*\x60{3}$/,''));}catch{throw new ReviewError('GPT 核查结果不是有效 JSON，原始内容已保留。','INVALID_REVIEW_OUTPUT',502);}
         const candidate=checkedReviewCandidateSchema.parse(raw);
         for(const field of [candidate.title,candidate.reading,candidate.meaning,candidate.focus,candidate.note,candidate.usageKey])if(field!==''&&redactFailureText(field,4000)!==field.trim())throw new ReviewError('GPT 核查结果含不安全内容，未更新知识点。','INVALID_REVIEW_OUTPUT',502);
-        const evidencePool=[point.note,...contexts.flatMap(context=>[context.context,context.questionPrompt,context.question?.passage||'',context.question?.prompt||'',...(context.question?.options?.map(option=>option.text)||[])])];
-        candidate.assessment.evidence=candidate.assessment.evidence.map(quote=>{if(evidencePool.some(value=>value.includes(quote)))return quote;const unquoted=quote.replace(/^[「『“\"]([\s\S]*)[」』”\"]$/,'$1');if(evidencePool.some(value=>value.includes(unquoted)))return unquoted;throw new ReviewError('AI 核查引用的证据不在原文中，未更新知识点。','INVALID_REVIEW_EVIDENCE',502);});
-        if(candidate.assessment.outcome!=='uncertain'&&!candidate.assessment.evidence.length)throw new ReviewError('AI 未给出可核对的原文依据，未更新知识点。','INVALID_REVIEW_EVIDENCE',502);
+        const evidencePool:EvidenceSource[]=contexts.flatMap((context,index)=>[
+          {label:`来源 ${index+1} · 标记原文`,text:context.context},
+          {label:`来源 ${index+1} · 题干`,text:context.questionPrompt},
+          {label:`来源 ${index+1} · 阅读材料`,text:context.question?.passage||''},
+          {label:`来源 ${index+1} · 完整题干`,text:context.question?.prompt||''},
+          ...(context.question?.options?.map((option,optionIndex)=>({label:`来源 ${index+1} · 选项 ${optionIndex+1}`,text:option.text}))||[]),
+        ]).filter(source=>!!source.text);
+        const contextOnly:ContextOnlySource[]=[
+          ...contexts.map(context=>({kind:'explanation' as const,text:context.question?.explanation||''})),
+          ...[point.note,...Object.values(payload.existingKnowledge||{})].map(value=>({kind:'existing_knowledge' as const,text:String(value)})),
+          ...existingUsages.flatMap(item=>[item.title,item.meaning,item.focus].map(text=>({kind:'existing_usages' as const,text}))),
+        ].filter(source=>!!source.text);
+        const rejectEvidence=(reason:'quote_not_found'|'missing_evidence'|'ambiguous_match',quote:string,index:number|null):never=>{
+          const message=reason==='missing_evidence'?'AI 没有提供可核对的原文引文，知识点保持原样，请查看失败详情。':reason==='ambiguous_match'?`第 ${index} 条 AI 引文经过格式匹配后对应多段不同原文，知识点保持原样，请查看失败详情。`:`第 ${index} 条 AI 引文未能对应到原文，知识点保持原样，请查看失败详情。`;
+          throw Object.assign(new ReviewError(message,'INVALID_REVIEW_EVIDENCE',502),{detail:evidenceFailureDetail({pointId,reason,quote,citationIndex:index,citationCount:candidate.assessment.evidence.length,sources:evidencePool,contextOnly})});
+        };
+        if(candidate.assessment.outcome!=='uncertain'&&!candidate.assessment.evidence.length)rejectEvidence('missing_evidence','',null);
+        const matchEvidence=createReviewEvidenceMatcher(evidencePool);
+        candidate.assessment.evidence=candidate.assessment.evidence.map((quote,index)=>{
+          const match=matchEvidence(quote);
+          if(!match.matched)return rejectEvidence(match.reason,quote,index+1);
+          // A very long whitespace run cannot bypass the persisted quote limit.
+          if(match.text.length>1000)return rejectEvidence('quote_not_found',quote,index+1);
+          return match.text;
+        });
         return this.applyChecked(original,candidate);
       }catch(error){
-        const source=sources.at(-1)!;const failure=this.options.diagnostics.record(error,{operation:'review',examId:source.exam_id,questionId:source.question_id,stage:audit?'review-audit':'review-normalize'});
+        const source=sources.at(-1)!;const failure=this.options.diagnostics.record(error,{operation:'review',examId:source.exam_id,questionId:source.question_id,model,stage:audit?'review-audit':'review-normalize'});
         const value=error&&typeof error==='object'?error as {publicMessage?:unknown;message?:unknown;code?:unknown;status?:unknown;diagnostics?:{upstreamStatus?:unknown}}:{};
         const reason=error instanceof z.ZodError?'GPT 核查字段、类型、长度或安全校验未通过，请查看失败记录。':redactFailureText(value.publicMessage??value.message,1750)||'AI 核查没有完成，请查看失败记录。';
         const code=typeof value.code==='string'&&/^[A-Za-z0-9_.:/-]{1,200}$/.test(value.code)?value.code:'';

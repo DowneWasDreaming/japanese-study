@@ -44,7 +44,7 @@ test('diagnostics redact credentials and identify exact invalid model fields wit
   for(const secret of ['token-private','user@example.com','confidential-secret','abcdef123456','hidden-token','"secret"','USER_ANSWER_PRIVATE','RAW_PRIVATE_ENUM','opaque-private-refresh','private-password','private-code'])assert.ok(!serialized.includes(secret),secret);
   const validation=diagnostics.list({category:'validation'}).items[0];assert.match(validation.detail!,/score: invalid_type; expected number; received type string/);assert.match(validation.detail!,/reading: invalid_enum_value/);assert.match(validation.detail!,/examples: too_small; minimum 1/);
   const network=diagnostics.list({category:'network'}).items[0];assert.equal(network.networkCode,'ETIMEDOUT');assert.equal(network.stage,'response-stream');assert.match(network.message,/ETIMEDOUT/);
-  for(const code of ['MODEL_STREAM_INVALID','MODEL_OUTPUT_INVALID','MODEL_COMPLETION_INVALID','MODEL_CATALOG_INVALID','MODEL_OUTPUT_TOO_LARGE'])assert.equal(classifyFailure(code,200,null),'validation');
+  for(const code of ['MODEL_STREAM_INVALID','MODEL_OUTPUT_INVALID','MODEL_COMPLETION_INVALID','MODEL_CATALOG_INVALID','MODEL_OUTPUT_TOO_LARGE','INVALID_REVIEW_EVIDENCE'])assert.equal(classifyFailure(code,200,null),'validation');
 });
 
 test('annotation grouped failures have their own persistent retry history and never change scores',async t=>{
