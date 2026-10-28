@@ -1,3 +1,4 @@
+import { checkedReviewReply } from './review-fixtures.js';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
@@ -21,7 +22,7 @@ async function setup(t: TestContext, reply: Reply = () => JSON.stringify(normali
   const directory=mkdtempSync(join(tmpdir(),'japanese-review-http-'));
   const db=openDatabase(':memory:');seedDatabase(db);
   const requests:{messages:Messages;model?:string}[]=[];
-  const provider:AIProvider={async generate(messages,model){requests.push({messages:structuredClone(messages),model});return reply(messages,requests.length);}};
+  const provider:AIProvider={async generate(messages,model){requests.push({messages:structuredClone(messages),model});return checkedReviewReply(await reply(messages,requests.length),messages);}};
   const service=new LearningService(db,provider,{backupDir:join(directory,'backups')});
   const stamp=new Date().toISOString(),id=randomUUID();
   const questions:Question[]=[{id:randomUUID(),type:'fill',level:'N5',category:'grammar',prompt:'宿題が済んでから、テレビを見ます。「済んで」の使い方を考えましょう。',answer:'済んで',acceptedAnswers:['済んで'],explanation:'「済んで」是「済む」的て形，表达完成。',knowledgePoints:['済む'],points:10,rubric:'按参考表达与允许答案判分。',source:'builtin'},
@@ -66,11 +67,11 @@ test('review HTTP keeps exact marked language and source context, waits for subm
 
 test('AI normalization automatically merges the same concept without resetting existing mastery or its edited level',async t=>{
   const {call,capture,manual,rate,get,submit,requests}=await setup(t);
-  const existing=await manual('済む');await call('/review/points/'+existing.id,{level:'N3'},'PUT');await rate(existing.id,'mastered');
+  const existing=await manual('済む');await call('/review/points/'+existing.id+'/audit',{});await call('/review/points/'+existing.id,{level:'N3'},'PUT');await rate(existing.id,'mastered');
   const before=(await get(existing.id)).json.item,draft=(await capture()).json.item;await submit();
   const result=await call('/review/points/'+draft.id+'/normalize',{});assert.equal(result.status,200,JSON.stringify(result.json));assert.equal(result.json.item.id,existing.id);
   const saved=result.json.item;assert.equal(saved.status,'mastered');assert.equal(saved.stage,7);assert.equal(saved.level,'N3');assert.equal(saved.dueAt,null);assert.equal(saved.repetitions,before.repetitions);assert.equal(saved.lastReviewedAt,before.lastReviewedAt);
-  assert.ok(saved.sources.some((source:any)=>source.text==='済んで'));assert.equal((await get(draft.id)).status,404);assert.equal(requests.length,1);
+  assert.ok(saved.sources.some((source:any)=>source.text==='済んで'));assert.equal((await get(draft.id)).status,404);assert.equal(requests.length,2);
 });
 
 test('canonical confirmation merges repeated broad marks without resetting mastery, while context-only points remain separate',async t=>{
@@ -112,7 +113,7 @@ test('AI review papers freeze selected concepts, verify per-question coverage an
   assert.ok(exam.questions.every((question:any)=>question.reviewPointIds.length&&question.reviewPointIds.every((id:string)=>[first.id,second.id].includes(id))));
   assert.equal(requests.length,1);assert.ok(requests[0].messages[0].content.includes('复习'));
   const savedConfig=JSON.parse(String(db.prepare('SELECT config_json FROM exams WHERE id=?').get(exam.id)!.config_json));
-  assert.deepEqual(savedConfig.reviewSnapshot.map(({reading,meaning,focus,...point}:any)=>point),exam.reviewPoints.map(({focus,...point}:any)=>point));
+  assert.deepEqual(savedConfig.reviewSnapshot.map(({reading,meaning,usageKey,note,focus,...point}:any)=>point),exam.reviewPoints.map(({focus,...point}:any)=>point));
   assert.ok(savedConfig.reviewSnapshot.every((point:any)=>point.reading==='すむ'&&point.meaning===normalized.meaning),'new papers freeze their readings and meanings');
   assert.ok(exam.reviewPoints.every((point:any)=>point.reading===undefined&&point.meaning===undefined&&point.focus!==normalized.focus),'draft review metadata must not expose the answers');
   await call('/review/points/'+first.id,{title:'済む（改名后）'},'PUT');assert.equal((await call('/exams/'+exam.id)).json.reviewPoints.find((point:any)=>point.id===first.id).title,'済む','paper keeps immutable learning target');

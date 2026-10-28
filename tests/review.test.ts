@@ -1,3 +1,4 @@
+import { checkedReviewReply } from './review-fixtures.js';
 import test,{type TestContext} from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -16,7 +17,7 @@ function setup(t:TestContext,ai?:AIProvider,submitted=false){
   const db=openDatabase(':memory:');if(!db.prepare("SELECT name FROM sqlite_master WHERE name='review_points'").get())db.exec(readFileSync(new URL('../migrations/006.sql',import.meta.url),'utf8'));
   db.prepare('INSERT INTO exams(id,title,level,category,mode,source,status,created_at,submitted_at,questions_json,config_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run('exam-one','测试卷','N4','grammar','exam','builtin',submitted?'completed':'draft',base,submitted?base:null,JSON.stringify([question]),JSON.stringify({model:'selected-model'}));
   let clock=new Date(base),busy=false;const diagnostics=new FailureDiagnostics(db);
-  const service=new ReviewService(db,ai,{diagnostics,isBusy:()=>busy,now:()=>clock});
+  const service=new ReviewService(db,ai?{async generate(messages,model){return checkedReviewReply(await ai.generate(messages,model),messages);}}:undefined,{diagnostics,isBusy:()=>busy,now:()=>clock});
   const add=()=>{const start=question.prompt.indexOf('済んで');return service.add({examId:'exam-one',questionId:question.id,source:'prompt',start,end:start+3,text:'済んで',scope:'broad',intent:'想复习原形和总体用法。'});};
   const manual=(title='済んで')=>service.add({text:title,level:'N4'}).item;
   const activate=(title='済む')=>{const draft=manual(title+'的标记');return service.confirm(draft.id,{...candidate,title}).item;};
@@ -54,20 +55,20 @@ test('manual confirmation can organize a saved mark without model permission or 
   assert.equal(active.status,'active');assert.equal(active.canNormalize,false);assert.equal(active.repetitions,0);assert.equal(active.sources[0].text,'済んで');
 });
 
-test('saved legacy candidates activate without model permission but never bypass the source submission gate',async t=>{
-  const{service,manual,add,db,submit}=setup(t);
+test('saved legacy candidates require a fresh teacher check and never bypass the source submission gate',async t=>{
+  let calls=0;const{service,manual,add,db,submit}=setup(t,{async generate(){calls++;return JSON.stringify(candidate);}});
   const legacy=manual('保存済み');db.prepare("UPDATE review_points SET normalization_status='completed',candidate_json=? WHERE id=?").run(JSON.stringify(candidate),legacy.id);
-  const activated=await service.normalize(legacy.id);assert.equal(activated.item.status,'active');assert.equal(activated.item.dueAt,base);assert.equal(activated.item.normalizationStatus,'none');assert.equal(activated.item.candidate,null);assert.equal(activated.item.repetitions,0);
+  const activated=await service.normalize(legacy.id);assert.equal(activated.item.status,'active');assert.equal(activated.item.dueAt,base);assert.equal(activated.item.normalizationStatus,'none');assert.equal(activated.item.candidate,null);assert.equal(activated.item.repetitions,0);assert.equal(calls,1);
   assert.equal((await service.normalize(legacy.id)).item.id,legacy.id,'a retry reads the already activated card');
   const linked=add().item;db.prepare("UPDATE review_points SET normalization_status='completed',candidate_json=? WHERE id=?").run(JSON.stringify(candidate),linked.id);
   await assert.rejects(service.normalize(linked.id),code('REVIEW_NOT_SUBMITTED'));assert.equal(service.get(linked.id).status,'draft');
-  submit();const merged=await service.normalize(linked.id);assert.equal(merged.merged,true);assert.equal(merged.item.id,legacy.id);assert.equal(merged.item.sources.length,2);
+  submit();const merged=await service.normalize(linked.id);assert.equal(merged.merged,true);assert.equal(merged.item.id,legacy.id);assert.equal(merged.item.sources.length,2);assert.equal(calls,2);
 });
 
 test('automatic normalization merges sources into existing active, paused or mastered points without resetting progress',async t=>{
   for(const state of ['active','paused','mastered'] as const){
     let calls=0;const{service,activate,snapshot}=setup(t,{async generate(){calls++;return JSON.stringify(candidate);}});
-    const existing=activate();service.rate(existing.id,{rating:'good',requestId:randomUUID()});if(state==='paused')service.update(existing.id,{status:'paused'});if(state==='mastered')service.rate(existing.id,{rating:'mastered',requestId:randomUUID()});
+    const existing=activate();await service.audit(existing.id);calls=0;service.rate(existing.id,{rating:'good',requestId:randomUUID()});if(state==='paused')service.update(existing.id,{status:'paused'});if(state==='mastered')service.rate(existing.id,{rating:'mastered',requestId:randomUUID()});
     const before=service.get(existing.id),draft=service.add({text:'另一处済んで',level:'N5'}).item;const result=await service.normalize(draft.id);
     assert.equal(calls,1);assert.equal(result.merged,true);assert.equal(result.item.id,existing.id);assert.equal(result.item.status,state);assert.equal(result.item.level,before.level);assert.equal(result.item.stage,before.stage);assert.equal(result.item.dueAt,before.dueAt);assert.equal(result.item.lastReviewedAt,before.lastReviewedAt);assert.equal(result.item.repetitions,before.repetitions);assert.equal(result.item.sources.length,2);assert.equal(snapshot().review_points.length,1);assert.equal(snapshot().review_events.length,before.repetitions);
   }
@@ -169,7 +170,7 @@ test('backup row schemas and semantic validator reject mismatched anchors, state
 
 test('list filters preserve accurate per-scope counts, due status and bounded pagination',t=>{
   const{service,activate,manual}=setup(t);const active=activate();manual('しまう');service.update(active.id,{meaning:'事情结束，完成。'});
-  const all=service.list({status:'all',pageSize:1});assert.equal(all.total,2);assert.equal(all.items.length,1);assert.equal(all.pages,2);assert.deepEqual(all.summary,{total:2,draft:1,active:1,mastered:0,paused:0,due:1});
+  const all=service.list({status:'all',pageSize:1});assert.equal(all.total,2);assert.equal(all.items.length,1);assert.equal(all.pages,2);assert.deepEqual(all.summary,{total:2,uncertain:0,draft:1,active:1,mastered:0,paused:0,due:1});
   assert.equal(service.list({status:'due'}).items[0].id,active.id);assert.equal(service.list({status:'all',q:'事情结束'}).total,1);assert.equal(service.list({status:'all',level:'N5'}).total,0);
   for(const query of [{page:0},{status:'unknown'},{unknown:true}])assert.throws(()=>service.list(query));
 });

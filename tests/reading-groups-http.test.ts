@@ -10,6 +10,7 @@ import {seedDatabase,type Question} from '../server/seed.js';
 import {LearningService,validateBackup,type AIProvider} from '../server/learning.js';
 import {createLearningRouter} from '../server/learning-router.js';
 import {localBoundary,errorHandler} from '../server/security.js';
+import {checkedReviewReply} from './review-fixtures.js';
 
 type Messages=Parameters<AIProvider['generate']>[0];
 type PlanGroup={kind:string;questionCount:number;minCharacters:number;maxCharacters:number;targetCharacters:number};
@@ -35,7 +36,7 @@ function generated(payload:Payload,serial:number){
 }
 const defaultReply:Reply=(payload,_messages,serial)=>{
   if(payload.marks)return JSON.stringify({explanations:payload.marks.map(mark=>({id:mark.id,reading:'すんで',meaning:'完成、结束后。',analysis:`「${mark.text}」需结合完整阅读材料理解。`,examples:[{ja:'仕事が済んでから帰ります。',zh:'工作结束后回去。'}],tip:'原形是済む。'}))});
-  if(payload.selectedText)return JSON.stringify(normalized);
+  if(payload.selectedText)return checkedReviewReply(JSON.stringify(normalized),_messages);
   if(payload.answerToReview!==undefined)return JSON.stringify({score:payload.answerToReview===(payload.question as any)?.referenceAnswer?10:0,feedback:'根据保存的完整材料及真实选项评阅。',suggestion:'对照材料中的理由理解。',reference:'A'});
   if(payload.currentQuestion)return '这处表达要结合整篇材料理解，说明先完成前项再进行后项。';
   return JSON.stringify(generated(payload,serial));

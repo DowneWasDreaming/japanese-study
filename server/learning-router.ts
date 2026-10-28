@@ -18,6 +18,12 @@ export function createLearningRouter(service:LearningService, db:DatabaseSync, a
     res.status(202).json(service.reviews.startBatch(req.body));
   });
   router.post('/review/normalize-batch/:jobId/stop',(req,res)=>res.json(service.reviews.stopBatch(String(req.params.jobId),req.body)));
+  router.get('/review/audit-batch',(_req,res)=>res.json(service.reviews.auditOverview()));
+  router.post('/review/audit-batch',(req,res)=>{
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再批量核查知识点。','REVIEW_BUSY',409);
+    res.status(202).json(service.reviews.startAuditBatch(req.body));
+  });
+  router.post('/review/audit-batch/:jobId/stop',(req,res)=>res.json(service.reviews.stopBatch(String(req.params.jobId),req.body)));
   router.get('/review/points',(req,res)=>res.json(service.reviews.list(req.query)));
   router.get('/review/points/:pointId',(req,res)=>res.json({item:service.reviews.get(String(req.params.pointId))}));
   router.post('/review/points',(req,res)=>{
@@ -28,6 +34,14 @@ export function createLearningRouter(service:LearningService, db:DatabaseSync, a
     z.object({}).strict().parse(req.body);
     if(additionalBusy())throw new LearningError('正在验证连接，请完成后再整理知识点。','REVIEW_BUSY',409);
     res.json(await service.reviews.normalize(String(req.params.pointId)));
+  });
+  router.post('/review/points/:pointId/audit',async(req,res)=>{
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再核查知识点。','REVIEW_BUSY',409);
+    res.json(await service.reviews.audit(String(req.params.pointId),req.body));
+  });
+  router.put('/review/points/:pointId/clarification',(req,res)=>{
+    if(additionalBusy())throw new LearningError('正在验证连接，请完成后再补充知识点语境。','REVIEW_BUSY',409);
+    res.json(service.reviews.clarify(String(req.params.pointId),req.body));
   });
   router.post('/review/points/:pointId/confirm',(req,res)=>{
     if(additionalBusy())throw new LearningError('正在验证连接，请完成后再确认知识点。','REVIEW_BUSY',409);

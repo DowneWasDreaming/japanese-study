@@ -1,3 +1,4 @@
+import { checkedReviewReply } from './review-fixtures.js';
 import test,{type TestContext} from 'node:test';
 import assert from 'node:assert/strict';
 import {setImmediate} from 'node:timers/promises';
@@ -11,7 +12,7 @@ const candidate={title:'済む',kind:'word',reading:'すむ',meaning:'完成、�
 const code=(expected:string)=>(error:unknown)=>(error as {code?:string})?.code===expected;
 function setup(t:TestContext,generate?:AIProvider['generate']){
   const db=openDatabase(':memory:');let externalBusy=false;const diagnostics=new FailureDiagnostics(db);
-  const service=new ReviewService(db,generate?{generate}:undefined,{diagnostics,now:()=>new Date(stamp),isBusy:()=>externalBusy});
+  const service=new ReviewService(db,generate?{async generate(messages,model){return checkedReviewReply(await generate(messages,model),messages);}}:undefined,{diagnostics,now:()=>new Date(stamp),isBusy:()=>externalBusy});
   const manual=(text:string)=>service.add({text,level:'N4'}).item;
   t.after(()=>db.close());return {db,service,diagnostics,manual,setBusy:(value:boolean)=>{externalBusy=value;}};
 }
@@ -31,13 +32,13 @@ test('batch snapshots every draft beyond one page and returns detached progress 
   assert.throws(()=>service.startBatch({}),code('NO_REVIEW_NORMALIZATION_PENDING'));
 });
 
-test('batch reuses saved suggestions and skips unsubmitted sources while activating without confirmation',async t=>{
+test('batch checks saved legacy suggestions and skips unsubmitted sources while activating without confirmation',async t=>{
   let calls=0;const {service,manual,db}=setup(t,async()=>{calls++;return JSON.stringify(candidate);});
   const cached=manual('完成済み');db.prepare("UPDATE review_points SET normalization_status='completed',candidate_json=? WHERE id=?").run(JSON.stringify(candidate),cached.id);
   db.prepare('INSERT INTO exams(id,title,level,category,mode,source,status,created_at,questions_json,config_json) VALUES(?,?,?,?,?,?,?,?,?,?)').run('exam','待交卷','N4','word','exam','builtin','draft',stamp,JSON.stringify([{id:'q',prompt:'宿題が済んでから。'}]),'{}');
   const blocked=service.add({examId:'exam',questionId:'q',source:'prompt',start:3,end:6,text:'済んで'}).item;
   const eligible=manual('もう一つ');assert.deepEqual({...service.batchOverview(),batch:undefined},{batch:undefined,totalDraftCount:3,eligibleCount:2,completedCount:1,blockedCount:1});
-  const start=service.startBatch({}).batch;assert.deepEqual(start.items.map(item=>item.id),[cached.id,eligible.id]);await finished(service);assert.equal(calls,1);assert.equal(service.get(blocked.id).normalizationStatus,'none');assert.equal(service.get(cached.id).status,'active');
+  const start=service.startBatch({}).batch;assert.deepEqual(start.items.map(item=>item.id),[cached.id,eligible.id]);await finished(service);assert.equal(calls,2);assert.equal(service.get(blocked.id).normalizationStatus,'none');assert.equal(service.get(cached.id).status,'active');
   const active=service.get(cached.id);assert.equal(active.status,'active');assert.equal(active.repetitions,0);
 });
 
@@ -75,7 +76,7 @@ test('batch rejects external work and malformed inputs, and missing model permis
   service.startBatch({});const stopped=await finished(service);assert.equal(stopped.failed,1);assert.equal(stopped.status,'stopped');assert.ok(stopped.stopReason?.includes('PLAN_PERMISSION_REQUIRED'));assert.equal(stopped.items[1].status,'skipped');
 });
 
-test('cached-only batches activate saved results with zero model requests and leave unfinished or unsubmitted marks untouched',async t=>{
+test('cached-only batches recheck saved results and leave unfinished or unsubmitted marks untouched',async t=>{
   let calls=0;const{db,service,manual}=setup(t,async()=>{calls++;return JSON.stringify(candidate);});
   const cached=manual('已整理待加入'),untouched=manual('未整理'),failed=manual('上次失败');
   db.prepare("UPDATE review_points SET normalization_status='completed',candidate_json=? WHERE id=?").run(JSON.stringify(candidate),cached.id);
@@ -85,13 +86,13 @@ test('cached-only batches activate saved results with zero model requests and le
   db.prepare("UPDATE review_points SET normalization_status='completed',candidate_json=? WHERE id=?").run(JSON.stringify(candidate),blocked.id);
   assert.equal(service.batchOverview().completedCount,1,'only cached results eligible to join are counted, excluding unsubmitted papers');
   assert.throws(()=>service.startBatch({cachedOnly:'true'}));const started=service.startBatch({cachedOnly:true}).batch;assert.deepEqual(started.items.map(item=>item.id),[cached.id]);
-  const result=await finished(service);assert.equal(result.succeeded,1);assert.equal(calls,0);assert.equal(service.get(cached.id).status,'active');assert.equal(service.get(untouched.id).normalizationStatus,'none');assert.equal(service.get(failed.id).normalizationStatus,'failed');assert.equal(service.get(blocked.id).status,'draft');assert.equal(service.batchOverview().blockedCount,1);assert.throws(()=>service.startBatch({cachedOnly:true}),code('NO_REVIEW_NORMALIZATION_PENDING'));
+  const result=await finished(service);assert.equal(result.succeeded,1);assert.equal(calls,1);assert.equal(service.get(cached.id).status,'active');assert.equal(service.get(untouched.id).normalizationStatus,'none');assert.equal(service.get(failed.id).normalizationStatus,'failed');assert.equal(service.get(blocked.id).status,'draft');assert.equal(service.batchOverview().blockedCount,1);assert.throws(()=>service.startBatch({cachedOnly:true}),code('NO_REVIEW_NORMALIZATION_PENDING'));
 });
 
 test('a reopened service recovers interrupted point state and skips saved candidates without relying on in-memory progress',async t=>{
   let calls=0;const {db,service,diagnostics,manual}=setup(t,async()=>{calls++;return JSON.stringify(candidate);});const saved=manual('已整理'),pending=manual('中断'),queued=manual('排队');await service.normalize(saved.id);
   db.prepare("UPDATE review_points SET normalization_status='pending' WHERE id=?").run(pending.id);
-  const restored=new ReviewService(db,{async generate(){calls++;return JSON.stringify(candidate);}},{diagnostics,now:()=>new Date(stamp)});
+  const restored=new ReviewService(db,{async generate(messages){calls++;return checkedReviewReply(JSON.stringify(candidate),messages);}},{diagnostics,now:()=>new Date(stamp)});
   assert.equal(restored.batchOverview().batch,null);assert.equal(restored.batchOverview().eligibleCount,2);assert.equal(restored.get(pending.id).normalizationStatus,'failed');assert.equal(restored.get(queued.id).normalizationStatus,'none');assert.equal(diagnostics.list({operation:'review'}).total,1);
   restored.startBatch({});const result=await finished(restored);assert.equal(result.succeeded,2);assert.equal(calls,3);assert.equal(restored.get(saved.id).normalizationStatus,'none');assert.equal(restored.get(saved.id).status,'active');
 });
